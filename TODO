@@ -1,48 +1,79 @@
-App Launch — Prioritized To-Do List
+# App Launch — Prioritized To-Do List
 
-🔴 Pre-Launch (Bug Fixes & Critical Issues)
-[ ] Offline mode UI — Move retry button and banner lower so they display correctly on all screen sizes
-[ ] Batch claiming bug — Fix claim reverting after a split second; ensure claimed batches populate the "My Workflow" tab correctly
-[ ] Voice command notification — Resolve "voice command not enabled" error; add voice control support for timer (start, pause, stop, etc.)
-[ ] App load time — Reduce time-to-home-screen to 3 seconds or less; investigate faster internet connectivity detection to minimize online/offline polling delay
+---
 
-🟠 Pre-Launch (Core Features)
-[ ] Account tiers — Maintain two separate account pages (standard and premium); standard users should not see premium/production tools to avoid overwhelm as well as maintain value in the premium service
-[ ] Location locking — Employees can only clock in within a set radius (~100m) of the registered business address
-Food trucks: when start-of-day report is submitted, record a location ping; all staff must check in within ~100m of that ping
-Multiple trucks require separate licenses; no simultaneous sign-in across physically separate locations
-Ghost kitchens operating multiple brands from one address are fine on a single license (data will not be separated by brand)
-[ ] Workflow caching & directory — Store all workflows created or imported by free-tier users; cache parsed results to avoid duplicate AI parse costs; build a browsable workflow directory (e.g. "Browse Directory" or "Import Workflow")
-Enforce no blog post attachments
-Make sure the only data being scraped is the actually recipe ingredients and steps. This information is not covered by copyright so were allowed to take it. The other information on the sites though (ie blog content) are covered by copyright and can get us in trouble.
+## 🔴 Pre-Launch (Bug Fixes & Critical Issues)
 
+- [ ] **Offline mode UI** — Move retry button and banner lower so they display correctly on all screen sizes
+- [ ] **Batch claiming bug** — Fix claim reverting after a split second; ensure claimed batches populate the "My Batches" tab correctly
+- [ ] **Voice command notification** — Resolve "voice command not enabled" error; add voice control support for timer (start, pause, stop, etc.)
+- [ ] **App load time** — Reduce time-to-home-screen to 3 seconds or less; investigate faster internet connectivity detection to minimize online/offline polling delay
 
-Parse workflows for equipment references (required vs. recommended)
+---
 
-[ ] Barcode printing (web portal) — Print barcodes tied to active batches; scanning with the app shows batch details (workflow, current step, timer, claimed status) and allows claiming. Printing the barcode should release that workflow from any user that has claimed it. 
-[ ] New user tutorial — Interactive onboarding walkthrough for first-time users
+## ⏪ Pending Rollback (App Stability — Local-First Restore)
 
-🟡 Post-Launch (Growth Features)
-[ ] POS integration — Connect to major POS systems (Square, Toast, Lightspeed, Clover, etc.) to pull in sales data for costing and revenue analytics
-Export data in appropriate formats (CSV, XLSX, etc.)
-[ ] Web embed tool — Paid embeddable widget for third-party websites to display workflow operations (branded "Powered by Batch Maker" or similar)
-[ ] Language packs — Downloadable language packs to translate the app UI; allows multilingual teams to work in their native language
-[ ] QuickBooks integration — Sync cost tracking and financial data
-[ ] Google Calendar sync — Schedule and view batches on a calendar
+> These changes made during the Feb 2026 development session degraded app performance and reliability. The app must be restored to local-first architecture before continuing other feature work.
 
-🔵 Future / Enterprise
-[ ] Predictive batch scheduling — Use POS sales and pre-order data to suggest production increases; calendar alerts for time-sensitive prep (e.g. day-before cold ferment); requires POS integration first. (part of QR code implementation as well)
-[ ] Customer order tracking
-[ ] Inventory management
-[ ] Staff scheduling
-[ ] Equipment maintenance logs
-[ ] Multi-location dashboard support
-[ ] Role-based permissions — Manager, supervisor, operator levels
+**Prompt for rollback session:**
+> "We need to roll back the app's data layer to local-first architecture. The app was fast and reliable when it used in-memory cache + AsyncStorage as the source of truth, with Supabase as a background sync target only. Recent changes made Supabase the primary data source, causing slow screen loads, broken batch claiming, broken voice recognition, and a broken 'My Batches' tab. The target commit is `a26cef0` (RELEASE BUILD) for the core data logic. Restore `services/database.ts` to that version's architecture — local cache is king, Supabase writes are fire-and-forget and never block the UI. Then add a clean background push layer for: batch create/update/delete, batch claiming (claimed_by, claimed_by_name columns), and workflow changes. The website reads from Supabase so it stays up to date, but the app never waits on Supabase for anything."
 
-Current bugs
+**Specific things to restore/fix:**
+- [ ] `services/database.ts` — restore local-first cache as source of truth, Supabase writes are background only
+- [ ] Remove 3-second polling `loadData()` loop that hammers Supabase on every tick in `WorkflowSelectScreen`
+- [ ] `claimBatch` — update local cache immediately, push to Supabase in background (fire-and-forget)
+- [ ] `_refreshBatches` — should hydrate from local AsyncStorage on launch, not block on Supabase
+- [ ] Voice recognition — regression introduced during refactor; restore working state from `a26cef0`
+- [ ] "My Batches" tab — should filter from local cache using `claimed_by === currentUserId`, not rely on Supabase query result
+- [ ] Remove any UI-blocking `await` calls to Supabase in the hot path (screen load, navigation, batch operations)
 
-Cancelling/releasing a batch, marking an item ass ordered etc (basically doing an action on the site) on the website clears the page of all contents (workflows, inventory items etc). Honestly this whole page needs a look at to make sure its working properly. I shouldnt have to refresh the page to bring back the workflows list contents or have the page update itself properly when a change occurs. This happens on every page… something changes and it wipes the whole page until I refresh. This is absolutely unacceptable.
+**New columns added to Supabase `batches` table that must be preserved in the background sync:**
+- `owner_id` (uuid) — set on batch creation, never changes
+- `claimed_by` (uuid) — who is currently working the batch
+- `claimed_by_name` (text) — display name of claimer
 
-Also the app has an archive function for workflows that the website does not have yet. 
+---
 
-The team status on the page also doesnt appear to be displaying anything correctly. This should only be showing if that employee is currently clocked in to that location. 
+## 🟠 Pre-Launch (Core Features)
+
+- [ ] **Account tiers** — Maintain two separate account pages (standard and premium); standard users should not see premium/production tools to avoid overwhelm as well as maintain value in the premium service
+- [ ] **Location locking** — Employees can only clock in within a set radius (~100m) of the registered business address
+  - Food trucks: when start-of-day report is submitted, record a location ping; all staff must check in within ~100m of that ping
+  - Multiple trucks require separate licenses; no simultaneous sign-in across physically separate locations
+  - Ghost kitchens operating multiple brands from one address are fine on a single license (data will not be separated by brand)
+- [ ] **Workflow caching & directory** — Store all workflows created or imported by free-tier users; cache parsed results to avoid duplicate AI parse costs; build a browsable workflow directory (e.g. "Browse Directory" or "Import Workflow")
+  - Enforce no blog post attachments
+  - Only scrape recipe ingredients and steps (not blog content — copyright risk)
+  - Parse workflows for equipment references (required vs. recommended)
+- [ ] **Barcode printing (web portal)** — Print barcodes tied to active batches; scanning with the app shows batch details (workflow, current step, timer, claimed status) and allows claiming. Printing the barcode should release that workflow from any user that has claimed it.
+- [ ] **New user tutorial** — Interactive onboarding walkthrough for first-time users
+
+---
+
+## 🟡 Post-Launch (Growth Features)
+
+- [ ] **POS integration** — Connect to major POS systems (Square, Toast, Lightspeed, Clover, etc.) to pull in sales data for costing and revenue analytics; export data in appropriate formats (CSV, XLSX, etc.)
+- [ ] **Web embed tool** — Paid embeddable widget for third-party websites to display workflow operations (branded "Powered by Batch Maker" or similar)
+- [ ] **Language packs** — Downloadable language packs to translate the app UI; allows multilingual teams to work in their native language
+- [ ] **QuickBooks integration** — Sync cost tracking and financial data
+- [ ] **Google Calendar sync** — Schedule and view batches on a calendar
+
+---
+
+## 🔵 Future / Enterprise
+
+- [ ] **Predictive batch scheduling** — Use POS sales and pre-order data to suggest production increases; calendar alerts for time-sensitive prep (e.g. day-before cold ferment); requires POS integration first
+- [ ] **Customer order tracking**
+- [ ] **Inventory management**
+- [ ] **Staff scheduling**
+- [ ] **Equipment maintenance logs**
+- [ ] **Multi-location dashboard support**
+- [ ] **Role-based permissions** — Manager, supervisor, operator levels
+
+---
+
+## 🐛 Current Website Bugs
+
+- [ ] **Page wipe on action** — Performing any action on the website (cancelling/releasing a batch, marking an item as ordered, etc.) clears the entire page contents until a manual refresh. Affects every page. Must be fixed before launch — unacceptable UX.
+- [ ] **Archive feature missing from website** — The app has workflow archiving; the website does not. Needs parity.
+- [ ] **Team status display broken** — Team status panel is not displaying correctly. Should only show employees who are currently clocked in to that location — nothing else.

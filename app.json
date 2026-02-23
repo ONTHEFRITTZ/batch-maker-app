@@ -90,7 +90,8 @@
           "speechRecognitionPermission": "Allow Batch Maker to recognize your voice commands."
         }
       ],
-      "expo-build-properties"
+      "expo-build-properties",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true

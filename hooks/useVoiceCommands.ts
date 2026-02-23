@@ -48,22 +48,15 @@ export function useVoiceCommands(
   const [recognizedText, setRecognizedText] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const isListeningRef   = useRef(false);
-  const isAwakeRef       = useRef(false);
-  const appStateRef      = useRef<AppStateStatus>(AppState.currentState);
-  const restartLockRef   = useRef(false);
+  const isListeningRef    = useRef(false);
+  const isAwakeRef        = useRef(false);
+  const appStateRef       = useRef<AppStateStatus>(AppState.currentState);
+  const restartLockRef    = useRef(false);
+  const shouldRestartRef  = useRef(false);
 
-  /*
-   * shouldRestartRef is the single source of truth for whether auto-restart
-   * is permitted.  It is set to TRUE only inside startListening() and FALSE
-   * as the very FIRST thing in stopListening() — before any async work —
-   * so that any restart callbacks queued after that point will bail out.
-   */
-  const shouldRestartRef = useRef(false);
-
-  const commandTimeoutRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restartTimeoutRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const watchdogRef          = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const commandTimeoutRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restartTimeoutRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchdogRef           = useRef<ReturnType<typeof setTimeout> | null>(null);
   const safeRestartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* ----------------------------- HELPERS ---------------------------------- */
@@ -103,7 +96,6 @@ export function useVoiceCommands(
   const startWatchdog = () => {
     clearRef(watchdogRef);
     watchdogRef.current = setTimeout(() => {
-      // Guard checked inside the callback — not at schedule time
       if (continuousListening && shouldRestartRef.current && !isListeningRef.current && !isAwakeRef.current) {
         safeRestartListening();
       }
@@ -112,10 +104,9 @@ export function useVoiceCommands(
 
   const stopWatchdog = () => clearRef(watchdogRef);
 
-  /* --------------------------- SAFE RESTART -------------------------------- */
+  /* --------------------------- SAFE RESTART ------------------------------- */
 
   const safeRestartListening = async (delay = 800) => {
-    // Guard checked here — not at call site, so a stale closure can't bypass it
     if (restartLockRef.current || GLOBAL_MIC_ACTIVE || !shouldRestartRef.current) return;
 
     restartLockRef.current = true;
@@ -123,7 +114,6 @@ export function useVoiceCommands(
 
     safeRestartTimeoutRef.current = setTimeout(async () => {
       try {
-        // Final guard — in case stopListening() was called during the delay
         if (!shouldRestartRef.current) {
           restartLockRef.current = false;
           return;
@@ -142,7 +132,7 @@ export function useVoiceCommands(
     }, delay);
   };
 
-  /* --------------------------- COMMAND FLOW -------------------------------- */
+  /* --------------------------- COMMAND FLOW ------------------------------- */
 
   const resetAwake = (retry: boolean) => {
     clearRef(commandTimeoutRef);
@@ -151,7 +141,6 @@ export function useVoiceCommands(
     setTimeout(() => {
       setRecognizedText('');
       setError(null);
-      // Guard checked at execution time — stale closure-safe
       if (retry && shouldRestartRef.current) safeRestartListening(500);
     }, 800);
   };
@@ -164,7 +153,7 @@ export function useVoiceCommands(
     catch (err) { console.error('Error executing command:', err); setError('Command failed'); resetAwake(true); }
   };
 
-  /* --------------------------- VOICE EVENTS -------------------------------- */
+  /* --------------------------- VOICE EVENTS ------------------------------- */
 
   useSpeechRecognitionEvent('start', () => {
     setIsListening(true);
@@ -178,12 +167,6 @@ export function useVoiceCommands(
     isListeningRef.current = false;
     stopWatchdog();
 
-    /*
-     * Key fix: schedule the restart but check shouldRestartRef INSIDE the
-     * timeout callback.  The original code checked it at schedule time;
-     * by the time the timeout fired the flag was still true because
-     * stopListening()'s async stop() hadn't finished yet.
-     */
     if (continuousListening && !isAwakeRef.current) {
       clearRef(restartTimeoutRef);
       restartTimeoutRef.current = setTimeout(() => {
@@ -220,7 +203,6 @@ export function useVoiceCommands(
     isListeningRef.current = false;
     GLOBAL_MIC_ACTIVE = false;
     stopWatchdog();
-    // Same pattern: check inside callback, not at schedule time
     if (continuousListening && !isAwakeRef.current) {
       setTimeout(() => {
         if (shouldRestartRef.current) safeRestartListening(1500);
@@ -228,7 +210,7 @@ export function useVoiceCommands(
     }
   });
 
-  /* ---------------------------- CLEANUP ------------------------------------ */
+  /* ---------------------------- CLEANUP ----------------------------------- */
 
   useEffect(() => {
     return () => {
@@ -242,14 +224,13 @@ export function useVoiceCommands(
     };
   }, []);
 
-  /* ---------------------------- APP STATE ---------------------------------- */
+  /* ---------------------------- APP STATE --------------------------------- */
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', next => {
       const prev = appStateRef.current;
       appStateRef.current = next;
       if (prev.match(/inactive|background/) && next === 'active' && continuousListening) {
-        // Guard checked inside safeRestartListening
         safeRestartListening(500);
       }
       if (next !== 'active') stopWatchdog();
@@ -262,7 +243,6 @@ export function useVoiceCommands(
   const startListening = async () => {
     if (isListeningRef.current || GLOBAL_MIC_ACTIVE) return;
     try {
-      // Set to true ONLY here — this is the gate
       shouldRestartRef.current = true;
 
       const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
@@ -273,16 +253,13 @@ export function useVoiceCommands(
       }
 
       GLOBAL_MIC_ACTIVE = true;
-      await ExpoSpeechRecognitionModule.start({
+      // Minimal options — only what Android supports reliably
+      GLOBAL_MIC_ACTIVE = true;
+      ExpoSpeechRecognitionModule.start({
         lang: 'en-US',
         interimResults: true,
         maxAlternatives: 1,
         continuous: continuousListening,
-        requiresOnDeviceRecognition: false,
-        addsPunctuation: false,
-        contextualStrings: wakeWord
-          ? [wakeWord, ...commands.map(c => c.command)]
-          : commands.map(c => c.command),
       });
     } catch (err) {
       console.error('Failed to start listening:', err);
@@ -296,27 +273,16 @@ export function useVoiceCommands(
   };
 
   const stopListening = async () => {
-    /*
-     * Set to false FIRST — synchronously, before any async work.
-     * This ensures every pending timeout callback that checks
-     * shouldRestartRef.current will see false and bail out,
-     * even if they were already queued.
-     */
     shouldRestartRef.current = false;
-
-    // Cancel all pending restart timers immediately
     clearRef(commandTimeoutRef);
     clearRef(restartTimeoutRef);
     clearRef(safeRestartTimeoutRef);
     stopWatchdog();
-
-    // Reset state
     setIsAwake(false);
     isAwakeRef.current = false;
     setIsListening(false);
     isListeningRef.current = false;
     restartLockRef.current = false;
-
     try {
       ExpoSpeechRecognitionModule.stop();
     } catch (err) {

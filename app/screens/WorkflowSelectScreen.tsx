@@ -8,8 +8,8 @@ import {
   getWorkflows, getBatches, createBatch, duplicateBatch, 
   renameBatch, deleteBatch, batchHasProgress, getMostUrgentTimer,
   batchHasExpiredTimer, getTimerStatus, formatTimeRemaining,
-  claimWorkflow, unclaimWorkflow, getClaimedWorkflows, getUnclaimedWorkflows,
-  isWorkflowClaimedByMe, archiveWorkflow, unarchiveWorkflow,
+  claimBatch, unclaimBatch, isBatchClaimedByMe,
+  archiveWorkflow, unarchiveWorkflow, getDeviceId,
   Workflow, Batch
 } from "../../services/database";
 import SettingsModal from "../components/SettingsModal";
@@ -112,9 +112,9 @@ const BatchItem: FC<{
             ) : (
               <View>
                 <Text style={[styles.batchName, { color: colors.text }]}>{item.name}</Text>
-                {workflow.claimedByName && (
-                  <Text style={[styles.claimedByLabel, { color: colors.success }]}>
-                    {isClaimed ? 'Your batch' : `${workflow.claimedByName}`}
+                {item.claimed_by_name && (
+                  <Text style={[styles.claimedByLabel, { color: isClaimed ? colors.success : colors.warning }]}>
+                    {isClaimed ? 'Your batch' : `Claimed by ${item.claimed_by_name}`}
                   </Text>
                 )}
               </View>
@@ -257,14 +257,14 @@ export const WorkflowSelectScreen: FC = () => {
   const [renameText, setRenameText] = useState("");
   const [showNewBatchModal, setShowNewBatchModal] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
-  const [showMyWorkflows, setShowMyWorkflows] = useState(false);
+  const [showMyBatches, setShowMyBatches] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [displayedWorkflows, setDisplayedWorkflows] = useState<Workflow[]>([]);
   const [batchSizeMultiplier, setBatchSizeMultiplier] = useState(1);
-  
-  const [claimedStatus, setClaimedStatus] = useState<Map<string, boolean>>(new Map());
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayedBatches, setDisplayedBatches] = useState<Batch[]>([]);
 
+  // Timer tick — keeps batch timers live without hitting Supabase
   useEffect(() => {
     const interval = setInterval(() => {
       const freshBatches = getBatches();
@@ -273,61 +273,39 @@ export const WorkflowSelectScreen: FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // CRITICAL FIX: Force refresh when screen gains focus
+  // Refresh from local cache when screen gains focus — no Supabase calls
   useFocusEffect(
     useCallback(() => {
-      console.log('[WorkflowSelect] Screen focused - refreshing data');
       loadData();
-      
-      // Also poll while screen is focused
-      const pollingInterval = setInterval(() => {
-        loadData();
-      }, 3000);
-      
-      return () => {
-        clearInterval(pollingInterval);
-      };
     }, [])
   );
 
   const loadData = async () => {
-    console.log('[WorkflowSelect] Loading workflows...');
+    const userId = await getDeviceId();
+    if (userId) setCurrentUserId(userId);
+
+    // getWorkflows() returns local cache instantly — no network wait
     const allWorkflows = await getWorkflows();
-    console.log('[WorkflowSelect] Loaded', allWorkflows.length, 'workflows');
     setWorkflows(allWorkflows);
     setBatches(getBatches());
-    
-    const statusMap = new Map<string, boolean>();
-    for (const workflow of allWorkflows) {
-      const claimed = await isWorkflowClaimedByMe(workflow.id);
-      statusMap.set(workflow.id, claimed);
-    }
-    setClaimedStatus(statusMap);
   };
 
+  // Filter workflows list
   useEffect(() => {
-    const filtered = showArchived 
-      ? workflows 
-      : workflows.filter(w => !w.archived);
-    
-    setDisplayedWorkflows(filtered);
+    setDisplayedWorkflows(showArchived ? workflows : workflows.filter(w => !w.archived));
   }, [showArchived, workflows]);
 
+  // Filter batches for "My Batches" tab — based on batch.claimed_by, not workflow
   useEffect(() => {
-    if (showMyWorkflows) {
-      const myBatches = batches.filter(batch => {
-        const isClaimed = claimedStatus.get(batch.workflowId) || false;
-        return isClaimed;
-      });
-      setDisplayedBatches(myBatches);
+    if (showMyBatches && currentUserId) {
+      setDisplayedBatches(batches.filter(b => b.claimed_by === currentUserId));
     } else {
       setDisplayedBatches(batches);
     }
-  }, [showMyWorkflows, batches, claimedStatus]);
+  }, [showMyBatches, batches, currentUserId]);
 
   const handleCreateBatch = async (mode: 'bake-today' | 'cold-ferment') => {
     if (!selectedWorkflow) return;
-    
     await createBatch(selectedWorkflow, mode, 1, batchSizeMultiplier);
     setShowNewBatchModal(false);
     setSelectedWorkflow(null);
@@ -343,7 +321,6 @@ export const WorkflowSelectScreen: FC = () => {
 
   const handleDeleteBatch = async (batchId: string) => {
     const hasProgress = batchHasProgress(batchId);
-    
     if (hasProgress) {
       Alert.alert(
         'Delete Batch?',
@@ -378,32 +355,28 @@ export const WorkflowSelectScreen: FC = () => {
   };
 
   const handleBatchPress = (batchId: string) => {
-    router.push({
-      pathname: '/screens/StepScreen',
-      params: { batchId }
-    });
+    router.push({ pathname: '/screens/StepScreen', params: { batchId } });
   };
 
   const handleClaimBatch = async (batchId: string) => {
-    const batch = batches.find(b => b.id === batchId);
-    if (!batch) return;
-
-    const isClaimed = claimedStatus.get(batch.workflowId) || false;
-    
-    if (isClaimed) {
-      await unclaimWorkflow(batch.workflowId);
-    } else {
-      await claimWorkflow(batch.workflowId);
+    if (!currentUserId) return;
+    try {
+      const alreadyClaimed = isBatchClaimedByMe(batchId, currentUserId);
+      if (alreadyClaimed) {
+        await unclaimBatch(batchId);
+      } else {
+        await claimBatch(batchId);
+      }
+      setContextMenuBatch(null);
+      await loadData();
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to update batch claim');
     }
-    
-    setContextMenuBatch(null);
-    await loadData();
   };
 
   const handleSelectWorkflow = (workflowId: string) => {
     const workflow = workflows.find(w => w.id === workflowId);
     if (!workflow) return;
-
     setSelectedWorkflow(workflowId);
     setShowNewBatchModal(true);
   };
@@ -411,7 +384,6 @@ export const WorkflowSelectScreen: FC = () => {
   const handleArchiveWorkflow = async (workflowId: string) => {
     const workflow = workflows.find(w => w.id === workflowId);
     if (!workflow) return;
-
     try {
       if (workflow.archived) {
         await unarchiveWorkflow(workflowId);
@@ -421,22 +393,17 @@ export const WorkflowSelectScreen: FC = () => {
       setContextMenuWorkflow(null);
       await loadData();
     } catch (error) {
-      console.error('Error toggling archive:', error);
       Alert.alert('Error', 'Failed to update workflow');
     }
   };
 
   const handleEditWorkflow = (workflowId: string) => {
     setContextMenuWorkflow(null);
-    router.push({
-      pathname: '/screens/WorkflowEditorScreen',
-      params: { workflowId }
-    });
+    router.push({ pathname: '/screens/WorkflowEditorScreen', params: { workflowId } });
   };
 
   const renderBatch = ({ item }: { item: Batch }) => {
-    const isClaimed = claimedStatus.get(item.workflowId) || false;
-    
+    const isClaimed = item.claimed_by === currentUserId;
     return (
       <BatchItem
         item={item}
@@ -459,9 +426,9 @@ export const WorkflowSelectScreen: FC = () => {
   };
 
   const renderWorkflow = ({ item, contextMenuOpen, onLongPress }: { item: Workflow; contextMenuOpen: boolean; onLongPress: (id: string) => void }) => {
-    const isClaimed = claimedStatus.get(item.id) || false;
     const hasActiveBatches = batches.some(b => b.workflowId === item.id);
-    
+    // Workflow-level claim display (who has claimed this recipe template)
+    const isClaimed = item.claimedBy === currentUserId;
     return (
       <WorkflowItem
         item={item}
@@ -481,14 +448,11 @@ export const WorkflowSelectScreen: FC = () => {
         <TouchableOpacity
           style={[
             styles.toggleOption,
-            !showMyWorkflows && { borderBottomColor: colors.primary, borderBottomWidth: 3 }
+            !showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }
           ]}
-          onPress={() => setShowMyWorkflows(false)}
+          onPress={() => setShowMyBatches(false)}
         >
-          <Text style={[
-            styles.toggleText,
-            { color: !showMyWorkflows ? colors.primary : colors.textSecondary }
-          ]}>
+          <Text style={[styles.toggleText, { color: !showMyBatches ? colors.primary : colors.textSecondary }]}>
             All Workflows
           </Text>
         </TouchableOpacity>
@@ -496,15 +460,12 @@ export const WorkflowSelectScreen: FC = () => {
         <TouchableOpacity
           style={[
             styles.toggleOption,
-            showMyWorkflows && { borderBottomColor: colors.primary, borderBottomWidth: 3 }
+            showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }
           ]}
-          onPress={() => setShowMyWorkflows(true)}
+          onPress={() => setShowMyBatches(true)}
         >
-          <Text style={[
-            styles.toggleText,
-            { color: showMyWorkflows ? colors.primary : colors.textSecondary }
-          ]}>
-            My Workflows
+          <Text style={[styles.toggleText, { color: showMyBatches ? colors.primary : colors.textSecondary }]}>
+            My Batches
           </Text>
         </TouchableOpacity>
       </View>
@@ -523,16 +484,12 @@ export const WorkflowSelectScreen: FC = () => {
           </View>
         )}
 
-        {!showMyWorkflows && (
+        {!showMyBatches && (
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Start New Batch
-              </Text>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Start New Batch</Text>
               <View style={styles.archiveToggleContainer}>
-                <Text style={[styles.archiveToggleLabel, { color: colors.textSecondary }]}>
-                  Show Archived
-                </Text>
+                <Text style={[styles.archiveToggleLabel, { color: colors.textSecondary }]}>Show Archived</Text>
                 <Switch
                   value={showArchived}
                   onValueChange={setShowArchived}
@@ -557,13 +514,7 @@ export const WorkflowSelectScreen: FC = () => {
                     {renderWorkflow({ 
                       item, 
                       contextMenuOpen: contextMenuWorkflow === item.id,
-                      onLongPress: (id) => {
-                        if (id === '') {
-                          setContextMenuWorkflow(null);
-                        } else {
-                          setContextMenuWorkflow(id);
-                        }
-                      }
+                      onLongPress: (id) => setContextMenuWorkflow(id === '' ? null : id)
                     })}
                     {contextMenuWorkflow === item.id && (
                       <View style={[styles.contextMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -573,7 +524,6 @@ export const WorkflowSelectScreen: FC = () => {
                         >
                           <Text style={[styles.contextMenuText, { color: colors.text }]}>Edit Workflow</Text>
                         </TouchableOpacity>
-
                         <TouchableOpacity 
                           style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
                           onPress={() => handleArchiveWorkflow(item.id)}
@@ -582,7 +532,6 @@ export const WorkflowSelectScreen: FC = () => {
                             {item.archived ? 'Unarchive' : 'Archive'}
                           </Text>
                         </TouchableOpacity>
-
                         <TouchableOpacity 
                           style={styles.contextMenuItem}
                           onPress={() => setContextMenuWorkflow(null)}
@@ -598,13 +547,11 @@ export const WorkflowSelectScreen: FC = () => {
           </View>
         )}
 
-        {showMyWorkflows && displayedBatches.length === 0 && (
+        {showMyBatches && displayedBatches.length === 0 && (
           <View style={styles.emptyState}>
-            <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-              No claimed batches
-            </Text>
+            <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No claimed batches</Text>
             <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
-              Claim a batch from All Workflows to see it here
+              Long-press a batch and tap Claim to see it here
             </Text>
           </View>
         )}
@@ -621,10 +568,7 @@ export const WorkflowSelectScreen: FC = () => {
 
       <SettingsModal 
         visible={settingsVisible}
-        onClose={() => {
-          setSettingsVisible(false);
-          loadData();
-        }}
+        onClose={() => { setSettingsVisible(false); loadData(); }}
         onWorkflowsUpdated={loadData}
       />
 
@@ -651,17 +595,11 @@ export const WorkflowSelectScreen: FC = () => {
                     style={[
                       styles.sizeButton,
                       { borderColor: colors.border },
-                      batchSizeMultiplier === size && { 
-                        backgroundColor: colors.primary,
-                        borderColor: colors.primary 
-                      }
+                      batchSizeMultiplier === size && { backgroundColor: colors.primary, borderColor: colors.primary }
                     ]}
                     onPress={() => setBatchSizeMultiplier(size)}
                   >
-                    <Text style={[
-                      styles.sizeButtonText,
-                      { color: batchSizeMultiplier === size ? 'white' : colors.text }
-                    ]}>
+                    <Text style={[styles.sizeButtonText, { color: batchSizeMultiplier === size ? 'white' : colors.text }]}>
                       {size}x
                     </Text>
                   </TouchableOpacity>
@@ -672,7 +610,6 @@ export const WorkflowSelectScreen: FC = () => {
             {selectedWorkflow && workflows.find(w => w.id === selectedWorkflow)?.show_ferment_prompt !== false && (
               <>
                 <Text style={[styles.modeSectionLabel, { color: colors.textSecondary }]}>Select Mode</Text>
-                
                 <TouchableOpacity 
                   style={[styles.modeButton, { backgroundColor: colors.success + '20', borderColor: colors.success }]}
                   onPress={() => handleCreateBatch('bake-today')}
@@ -680,7 +617,6 @@ export const WorkflowSelectScreen: FC = () => {
                   <Text style={styles.modeButtonIcon}>🟢</Text>
                   <Text style={[styles.modeButtonText, { color: colors.text }]}>Bake Today</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity 
                   style={[styles.modeButton, { backgroundColor: colors.primary + '20', borderColor: colors.primary }]}
                   onPress={() => handleCreateBatch('cold-ferment')}
@@ -702,11 +638,7 @@ export const WorkflowSelectScreen: FC = () => {
 
             <TouchableOpacity 
               style={styles.modeCancelButton}
-              onPress={() => {
-                setShowNewBatchModal(false);
-                setSelectedWorkflow(null);
-                setBatchSizeMultiplier(1);
-              }}
+              onPress={() => { setShowNewBatchModal(false); setSelectedWorkflow(null); setBatchSizeMultiplier(1); }}
             >
               <Text style={[styles.modeCancelText, { color: colors.textSecondary }]}>Cancel</Text>
             </TouchableOpacity>
