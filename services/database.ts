@@ -69,6 +69,10 @@ export interface Batch {
   location_id?: string;
   created_at?: string;
   updated_at?: string;
+  // Waste tracking
+  wasted_at?: string;
+  wasted_at_step?: number;
+  waste_notes?: string;
 }
 
 // ============================================
@@ -213,14 +217,9 @@ async function _fetchBatches(userId: string): Promise<Batch[] | null> {
 // ============================================
 
 export async function getWorkflows(): Promise<Workflow[]> {
-  // Serve from cache — fast and synchronous at runtime
   if (cachedWorkflows.length > 0) return [...cachedWorkflows];
-
-  // First launch — try AsyncStorage
   const persisted = await loadPersistedWorkflows();
   if (persisted.length > 0) { cachedWorkflows = persisted; return [...cachedWorkflows]; }
-
-  // Truly first launch — fetch once from Supabase
   const userId = await getDeviceId();
   if (!userId) return [];
   const workflows = await _fetchWorkflows(userId);
@@ -352,7 +351,6 @@ export async function unarchiveWorkflow(workflowId: string): Promise<void> {
 export async function claimWorkflow(workflowId: string): Promise<void> {
   const userId = await getDeviceId();
   const deviceName = await getDeviceName();
-
   const workflow = cachedWorkflows.find(w => w.id === workflowId);
   if (workflow) { workflow.claimedBy = userId; workflow.claimedByName = deviceName; }
   persistWorkflows(cachedWorkflows);
@@ -368,7 +366,6 @@ export async function claimWorkflow(workflowId: string): Promise<void> {
 
 export async function unclaimWorkflow(workflowId: string): Promise<void> {
   const userId = await getDeviceId();
-
   const workflow = cachedWorkflows.find(w => w.id === workflowId);
   if (workflow) { workflow.claimedBy = undefined; workflow.claimedByName = undefined; }
   persistWorkflows(cachedWorkflows);
@@ -402,7 +399,6 @@ export async function isWorkflowClaimedByMe(workflowId: string): Promise<boolean
 export async function claimBatch(batchId: string): Promise<void> {
   const userId = await getDeviceId();
   const deviceName = await getDeviceName();
-
   const batch = cachedBatches.find(b => b.id === batchId);
   if (batch) { batch.claimed_by = userId; batch.claimed_by_name = deviceName; }
   persistBatches(cachedBatches);
@@ -418,7 +414,6 @@ export async function claimBatch(batchId: string): Promise<void> {
 
 export async function unclaimBatch(batchId: string): Promise<void> {
   const userId = await getDeviceId();
-
   const batch = cachedBatches.find(b => b.id === batchId);
   if (batch) { batch.claimed_by = undefined; batch.claimed_by_name = undefined; }
   persistBatches(cachedBatches);
@@ -458,6 +453,9 @@ function dbBatchToApp(db: any): Batch {
     location_id: db.location_id,
     created_at: db.created_at,
     updated_at: db.updated_at,
+    wasted_at: db.wasted_at || undefined,
+    wasted_at_step: db.wasted_at_step ?? undefined,
+    waste_notes: db.waste_notes || undefined,
   };
 }
 
@@ -618,6 +616,162 @@ export async function completeBatchStep(batchId: string, stepId: string): Promis
   if (!batch || batch.completedSteps.includes(stepId)) return;
   batch.completedSteps.push(stepId);
   await _updateBatch(batchId, { completedSteps: batch.completedSteps });
+}
+
+// ============================================
+// WASTE TRACKING
+// ============================================
+
+export async function wasteBatch(
+  batchId: string,
+  atStepIndex: number,
+  notes?: string
+): Promise<void> {
+  const batch = cachedBatches.find(b => b.id === batchId);
+  if (!batch) throw new Error('Batch not found');
+
+  const wastedAt = new Date().toISOString();
+  batch.wasted_at = wastedAt;
+  batch.wasted_at_step = atStepIndex;
+  batch.waste_notes = notes;
+  persistBatches(cachedBatches);
+
+  push(async () => {
+    const { error } = await supabase.from('batches').update({
+      wasted_at: wastedAt,
+      wasted_at_step: atStepIndex,
+      waste_notes: notes || null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', batchId);
+    if (error) throw error;
+  });
+}
+
+// Deduct ingredients from inventory for steps 0..upToStepIndex (inclusive).
+// isWaste=true writes 'waste' transactions; false writes 'use' transactions.
+export async function deductIngredientsForBatch(
+  batchId: string,
+  workflow: Workflow,
+  upToStepIndex: number,
+  batchSizeMultiplier: number,
+  isWaste: boolean = false
+): Promise<{ deducted: { name: string; amount: number; unit: string }[]; skipped: string[] }> {
+  const userId = await getDeviceId();
+  if (!userId) throw new Error('Must be signed in');
+
+  // Collect all ingredients from steps 0..upToStepIndex
+  const ingredientsToDeduct: { name: string; amount: number; unit: string }[] = [];
+
+  for (let i = 0; i <= upToStepIndex; i++) {
+    const step = workflow.steps[i];
+    if (!step) continue;
+    const stepIngredients = _extractStepIngredients(step, batchSizeMultiplier);
+    for (const ing of stepIngredients) {
+      const existing = ingredientsToDeduct.find(
+        d => d.name.toLowerCase() === ing.name.toLowerCase() && d.unit === ing.unit
+      );
+      if (existing) {
+        existing.amount += ing.amount;
+      } else {
+        ingredientsToDeduct.push({ ...ing });
+      }
+    }
+  }
+
+  if (ingredientsToDeduct.length === 0) {
+    return { deducted: [], skipped: [] };
+  }
+
+  // Fetch current inventory from Supabase
+  const { data: inventoryItems, error: invError } = await supabase
+    .from('inventory_items')
+    .select('*')
+    .eq('user_id', userId);
+
+  if (invError) throw new Error('Failed to fetch inventory: ' + invError.message);
+
+  const deducted: { name: string; amount: number; unit: string }[] = [];
+  const skipped: string[] = [];
+
+  for (const ing of ingredientsToDeduct) {
+    const invItem = (inventoryItems || []).find(
+      (item: any) => item.name.toLowerCase() === ing.name.toLowerCase()
+    );
+
+    if (!invItem) {
+      skipped.push(ing.name);
+      continue;
+    }
+
+    const newQty = Math.max(0, invItem.quantity - ing.amount);
+
+    await supabase
+      .from('inventory_items')
+      .update({ quantity: newQty, last_updated: new Date().toISOString() })
+      .eq('id', invItem.id);
+
+    await supabase.from('inventory_transactions').insert({
+      user_id: userId,
+      item_id: invItem.id,
+      type: isWaste ? 'waste' : 'use',
+      quantity: ing.amount,
+      notes: isWaste
+        ? `Wasted in batch: ${batchId} (at step ${upToStepIndex + 1})`
+        : `Used in batch: ${batchId}`,
+      created_by: userId,
+      created_at: new Date().toISOString(),
+    });
+
+    deducted.push(ing);
+  }
+
+  return { deducted, skipped };
+}
+
+// Parse ingredients out of a step — uses structured array or falls back to checklist parsing
+function _extractStepIngredients(
+  step: Step,
+  multiplier: number
+): { name: string; amount: number; unit: string }[] {
+  const results: { name: string; amount: number; unit: string }[] = [];
+
+  if (step.ingredients && step.ingredients.length > 0) {
+    for (const ing of step.ingredients) {
+      const parsed = _parseIngredientString(ing, multiplier);
+      if (parsed) results.push(parsed);
+    }
+    return results;
+  }
+
+  const checklistMatch = step.description?.match(/📋 Checklist:\n([\s\S]*?)(?=\n\n|$)/);
+  if (checklistMatch) {
+    const lines = checklistMatch[1]
+      .split('\n')
+      .map((l: string) => l.replace(/^☐\s*/, '').trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      const parsed = _parseIngredientString(line, multiplier);
+      if (parsed) results.push(parsed);
+    }
+  }
+
+  return results;
+}
+
+// Parse "250g flour" or "2 cups sugar" → { name, amount, unit }
+function _parseIngredientString(
+  text: string,
+  multiplier: number
+): { name: string; amount: number; unit: string } | null {
+  const match = text.match(
+    /^(\d+(?:\.\d+)?)\s*(g|kg|ml|l|oz|lb|cup|cups|tbsp|tsp|piece|pieces)?\s+(.+)$/i
+  );
+  if (!match) return null;
+  const amount = parseFloat(match[1]) * multiplier;
+  const unit = (match[2] || 'unit').toLowerCase();
+  const name = match[3].trim();
+  if (!name || amount <= 0) return null;
+  return { name, amount: Math.round(amount * 100) / 100, unit };
 }
 
 // ============================================
