@@ -1,38 +1,5 @@
 # App Launch — Prioritized To-Do List
 
----
-
-## 🔴 Pre-Launch (Bug Fixes & Critical Issues)
-
-- [ ] **Offline mode UI** — Move retry button and banner lower so they display correctly on all screen sizes
-- [ ] **Batch claiming bug** — Fix claim reverting after a split second; ensure claimed batches populate the "My Batches" tab correctly
-- [ ] **Voice command notification** — Resolve "voice command not enabled" error; add voice control support for timer (start, pause, stop, etc.)
-- [ ] **App load time** — Reduce time-to-home-screen to 3 seconds or less; investigate faster internet connectivity detection to minimize online/offline polling delay
-
----
-
-## ⏪ Pending Rollback (App Stability — Local-First Restore)
-
-> These changes made during the Feb 2026 development session degraded app performance and reliability. The app must be restored to local-first architecture before continuing other feature work.
-
-**Prompt for rollback session:**
-> "We need to roll back the app's data layer to local-first architecture. The app was fast and reliable when it used in-memory cache + AsyncStorage as the source of truth, with Supabase as a background sync target only. Recent changes made Supabase the primary data source, causing slow screen loads, broken batch claiming, broken voice recognition, and a broken 'My Batches' tab. The target commit is `a26cef0` (RELEASE BUILD) for the core data logic. Restore `services/database.ts` to that version's architecture — local cache is king, Supabase writes are fire-and-forget and never block the UI. Then add a clean background push layer for: batch create/update/delete, batch claiming (claimed_by, claimed_by_name columns), and workflow changes. The website reads from Supabase so it stays up to date, but the app never waits on Supabase for anything."
-
-**Specific things to restore/fix:**
-- [ ] `services/database.ts` — restore local-first cache as source of truth, Supabase writes are background only
-- [ ] Remove 3-second polling `loadData()` loop that hammers Supabase on every tick in `WorkflowSelectScreen`
-- [ ] `claimBatch` — update local cache immediately, push to Supabase in background (fire-and-forget)
-- [ ] `_refreshBatches` — should hydrate from local AsyncStorage on launch, not block on Supabase
-- [ ] Voice recognition — regression introduced during refactor; restore working state from `a26cef0`
-- [ ] "My Batches" tab — should filter from local cache using `claimed_by === currentUserId`, not rely on Supabase query result
-- [ ] Remove any UI-blocking `await` calls to Supabase in the hot path (screen load, navigation, batch operations)
-
-**New columns added to Supabase `batches` table that must be preserved in the background sync:**
-- `owner_id` (uuid) — set on batch creation, never changes
-- `claimed_by` (uuid) — who is currently working the batch
-- `claimed_by_name` (text) — display name of claimer
-
----
 
 ## 🟠 Pre-Launch (Core Features)
 
@@ -45,7 +12,7 @@
   - Enforce no blog post attachments
   - Only scrape recipe ingredients and steps (not blog content — copyright risk)
   - Parse workflows for equipment references (required vs. recommended)
-- [ ] **Barcode printing (web portal)** — Print barcodes tied to active batches; scanning with the app shows batch details (workflow, current step, timer, claimed status) and allows claiming. Printing the barcode should release that workflow from any user that has claimed it.
+- [ ] **Barcode printing (app)** — Print barcodes tied to active batches (maybe because its mid fermentation. not sure if the print QR button should have options but it should definitely import that batch and open it at the last completed step for the user that scans it.); scanning with the app shows batch details (workflow, current step, timer, claimed status) and allows claiming. Printing the barcode should release that workflow from any user that has claimed it.
 - [ ] **New user tutorial** — Interactive onboarding walkthrough for first-time users
 
 ---
