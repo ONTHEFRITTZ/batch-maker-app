@@ -7,6 +7,7 @@
 
 import type { User } from "@supabase/supabase-js";
 import * as Linking from "expo-linking";
+import * as WebBrowser from "expo-web-browser";
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
@@ -28,13 +29,10 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const [user, setUser] = useState<User | null>(null);
 
-  // ── Offline-aware init ─────────────────────────────────────────────────────
   const { initState } = useAppInit();
-
-  // ── Live connection + sync status ──────────────────────────────────────────
   const connection = useConnectionStatus();
 
-  // ── Auth state (mirrors session in/out events after init) ─────────────────
+  // ── Auth state ─────────────────────────────────────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -47,7 +45,7 @@ export default function HomeScreen() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Deep link handler (OAuth callback) ────────────────────────────────────
+  // ── Deep link handler (fallback for edge cases) ────────────────────────────
   useEffect(() => {
     const handleDeepLink = async (event: { url: string }) => {
       const url = event.url;
@@ -58,7 +56,6 @@ export default function HomeScreen() {
           const queryParams = urlObj.searchParams;
           const access_token = queryParams.get("access_token") || hashParams.get("access_token");
           const refresh_token = queryParams.get("refresh_token") || hashParams.get("refresh_token");
-
           if (access_token && refresh_token) {
             const { error } = await supabase.auth.setSession({ access_token, refresh_token });
             if (error) Alert.alert("Sign In Error", error.message);
@@ -83,9 +80,20 @@ export default function HomeScreen() {
       });
       if (error) { Alert.alert("Error", error.message); return; }
       if (!data?.url) { Alert.alert("Error", "Failed to get sign-in URL"); return; }
-      const supported = await Linking.canOpenURL(data.url);
-      if (supported) await Linking.openURL(data.url);
-      else Alert.alert("Error", "Cannot open sign-in page");
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, "batchmaker://");
+
+      if (result.type === "success" && result.url) {
+        const urlObj = new URL(result.url);
+        const hashParams = new URLSearchParams(urlObj.hash.substring(1));
+        const queryParams = urlObj.searchParams;
+        const access_token = queryParams.get("access_token") || hashParams.get("access_token");
+        const refresh_token = queryParams.get("refresh_token") || hashParams.get("refresh_token");
+        if (access_token && refresh_token) {
+          const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+          if (error) Alert.alert("Sign In Error", error.message);
+        }
+      }
     } catch (error: any) {
       Alert.alert("Error", error.message || "Failed to sign in");
     }
@@ -136,14 +144,12 @@ export default function HomeScreen() {
     );
   }
 
-  // ── Main app (online or offline with cached session) ───────────────────────
+  // ── Main app ───────────────────────────────────────────────────────────────
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
 
-      {/* Offline / sync status banner */}
       <SyncStatusBar connection={connection} />
 
-      {/* Top bar: sync dot + sign out */}
       <View style={styles.topBar}>
         <View style={styles.syncIndicator}>
           <View style={[
@@ -173,7 +179,6 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Logo */}
       <View style={styles.header}>
         <Image
           source={require("../assets/images/splash-alpha.png")}
@@ -185,7 +190,6 @@ export default function HomeScreen() {
         </Text>
       </View>
 
-      {/* Menu */}
       <View style={styles.menuContainer}>
         {user && (
           <Text style={[styles.email, { color: colors.textSecondary }]}>
