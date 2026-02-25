@@ -1,46 +1,141 @@
-# App Launch — Prioritized To-Do List
-
-
-## 🟠 Pre-Launch (Core Features)
-
-- [ ] **Account tiers** — Maintain two separate account pages (standard and premium); standard users should not see premium/production tools to avoid overwhelm as well as maintain value in the premium service
-- [ ] **Location locking** — Employees can only clock in within a set radius (~100m) of the registered business address
-  - Food trucks: when start-of-day report is submitted, record a location ping; all staff must check in within ~100m of that ping
-  - Multiple trucks require separate licenses; no simultaneous sign-in across physically separate locations
-  - Ghost kitchens operating multiple brands from one address are fine on a single license (data will not be separated by brand)
-- [ ] **Workflow caching & directory** — Store all workflows created or imported by free-tier users; cache parsed results to avoid duplicate AI parse costs; build a browsable workflow directory (e.g. "Browse Directory" or "Import Workflow")
-  - Enforce no blog post attachments
-  - Only scrape recipe ingredients and steps (not blog content — copyright risk)
-  - Parse workflows for equipment references (required vs. recommended)
-- [ ] **Barcode printing (app)** — Print barcodes tied to active batches (maybe because its mid fermentation. not sure if the print QR button should have options but it should definitely import that batch and open it at the last completed step for the user that scans it.); scanning with the app shows batch details (workflow, current step, timer, claimed status) and allows claiming. Printing the barcode should release that workflow from any user that has claimed it.
-- [ ] **New user tutorial** — Interactive onboarding walkthrough for first-time users
+# Batch Maker — Master To-Do List
+_Last updated: 2026-02-24_
 
 ---
 
-## 🟡 Post-Launch (Growth Features)
+## 🐛 Bugs — Fix Before Launch
 
-- [ ] **POS integration** — Connect to major POS systems (Square, Toast, Lightspeed, Clover, etc.) to pull in sales data for costing and revenue analytics; export data in appropriate formats (CSV, XLSX, etc.)
-- [ ] **Web embed tool** — Paid embeddable widget for third-party websites to display workflow operations (branded "Powered by Batch Maker" or similar)
-- [ ] **Language packs** — Downloadable language packs to translate the app UI; allows multilingual teams to work in their native language
-- [ ] **QuickBooks integration** — Sync cost tracking and financial data
-- [ ] **Google Calendar sync** — Schedule and view batches on a calendar
+- [x] **Page wipe on action** — Any action (cancel batch, mark ordered, etc.) cleared the entire page until manual refresh. **FIXED** in `dashboard.tsx` via `useRef` for `selectedLocationId` — fetch functions now always read the current location value, not a stale closure.
+- [ ] **Archive feature missing from website** — The app has workflow archiving; the website does not. Needs parity with the mobile app.
+- [ ] **Team status display broken** — Should only show employees currently clocked in at that location. Currently shows incorrect data. Fix: query `time_entries` where `clock_out IS NULL` and `owner_id = user.id`, then filter by `location_id` if a location is selected.
+
+---
+
+## 🟠 Pre-Launch — Core Features
+
+### Account & Access
+- [ ] **Account tiers** — Maintain two separate account pages (standard and premium). Standard users must not see premium/production tools — both to avoid overwhelm and to maintain value in the premium tier.
+- [ ] **New user tutorial** — Interactive onboarding walkthrough for first-time users (tooltips, guided steps, sample workflow).
+
+### Employee & Location
+- [x] **Employee directory** — Active / On Leave / Terminated status on `network_member_roles` (not profiles). No photos. Employees can work at multiple businesses.
+- [x] **Employment status gate** — `canClockIn()` blocks terminated and on_leave employees at the API level.
+- [ ] **Location locking** — Employees can only clock in within ~100m of the registered business address.
+  - Food trucks: when start-of-day report is submitted, record a GPS ping; all staff must clock in within ~100m of that ping.
+  - Multiple trucks require separate licenses; no simultaneous sign-in across physically separate locations.
+  - Ghost kitchens running multiple brands from one address are fine on a single license (data will not be separated by brand).
+  - Implementation: capture `navigator.geolocation` on clock-in, compare against `locations.lat/lng` in `canClockIn()`.
+
+### Workflows & Batches
+- [ ] **Workflow caching & public directory** — Cache AI-parsed workflow results to avoid duplicate parse costs. Build a browsable "Workflow Directory" for importing community workflows.
+  - Only scrape recipe ingredients and steps — no blog content (copyright risk).
+  - Enforce no blog post attachments.
+  - Parse workflows for equipment references (required vs. recommended).
+- [ ] **Barcode / QR printing (app)** — Print a QR code tied to an active batch (useful mid-fermentation etc.). Scanning the QR with the app:
+  - Imports the batch and opens it at the last completed step.
+  - Allows the scanning user to claim it.
+  - Printing the QR should release the workflow from any user who currently holds it.
+
+---
+
+## ✅ Completed
+
+### DashboardCalendar.tsx
+- [x] Force Delete stuck `in_progress` batches (cleans orphaned `batches` rows)
+- [x] Mark Done on `in_progress` batches
+- [x] Hard Delete on all statuses
+- [x] Copy Batch — duplicate to any date
+- [x] Repeat Batch — recurring weekly modal, skips duplicates
+
+### DashboardSchedule.tsx
+- [x] Multi-employee shift creation
+- [x] Shift types: Scheduled / Holiday / Sick Day with colour coding
+- [x] Hard delete shifts
+- [x] Copy shift to another date, re-assignable to different employee
+- [x] Repeat shift — weekly recurring modal with multi-employee support
+- [x] Tab bar: Calendar | All Shifts | Labour Report
+- [x] Labour Report tab — monthly hours/holiday/sick table per employee
+
+### Employee Directory (pages/directory.tsx)
+- [x] No photo storage — initials avatar only
+- [x] Status: `active` / `on_leave` / `terminated` on `network_member_roles` (not `profiles`)
+- [x] Terminated employees keep their account and can join other businesses
+- [x] Edit modal: job title, phone, hire date, role, location restrictions, access toggles
+- [x] Location assignment — restrict employee to specific locations or allow all
+- [x] Status change modal with required termination reason / optional leave reason
+- [x] Invite modal (first/last name, job title, phone, role)
+- [x] Cancel pending invitations
+- [x] CSV export (client-side)
+- [x] Filter: All / Active / On Leave / Terminated + search
+- [x] Remove member (relationship only, does not delete account)
+
+### Backend / API
+- [x] `api/directory/status.ts` — replaces `blacklist.ts`, uses `getSupabaseClient()` pattern
+- [x] `canClockIn()` — blocks terminated/on_leave; holiday/sick shifts excluded from shift match
+- [x] `timeEntries.ts` — fixed `req.params` → `req.query.id`; `total_hours` calculated on clock-out and edit; `.single()` → `.maybeSingle()` on empty-safe queries; email notification ready to uncomment
+- [x] `pages/api/time-entries/[id].ts` — new dynamic route for edit/delete
+- [x] `lib/supabase.ts` — updated `Profile` type (trial, platform, business fields); added `getSupabaseAdmin()` for service-role operations; added `isPremiumProfile()` helper
+- [x] `dashboard.tsx` — page wipe bug fixed with `useRef`; uses `isPremiumProfile()` helper
+- [x] SQL migration: `migration_employee_directory.sql`
+
+---
+
+## 🔲 Up Next — Scheduling
+- [ ] Save/load week as a reusable schedule template ("Week A", "Week B")
+- [ ] Apply saved template to a target week in one click
+- [ ] Bulk delete shifts by employee or date range
+- [ ] Export schedule to PDF / printable weekly view
+
+---
+
+## 🔲 Labour Reports
+- [ ] Hourly rate field on employee profile (stored on `network_member_roles`)
+- [ ] Labour cost report (hours × rate, by employee / location / week)
+- [ ] Attach labour summary to end-of-day batch completion report
+- [ ] Server-side CSV export with complete data
+
+---
+
+## 🔲 Holiday & Absence
+- [ ] Holiday allowance tracker (days used vs. remaining per employee per year)
+- [ ] Approval workflow for holiday requests (employee requests → owner approves/declines)
+- [ ] Absence calendar overlay across entire team
+
+---
+
+## 🟡 Post-Launch — Growth Features
+- [ ] **POS integration** — Square, Toast, Lightspeed, Clover etc. Pull in sales data for costing and revenue analytics. Export to CSV/XLSX.
+- [ ] **Web embed tool** — Paid embeddable widget for third-party sites ("Powered by Batch Maker").
+- [ ] **Language packs** — Downloadable UI translations for multilingual teams.
+- [ ] **QuickBooks integration** — Sync cost tracking and financial data.
+- [ ] **Google Calendar sync** — View and schedule batches from Google Calendar.
 
 ---
 
 ## 🔵 Future / Enterprise
-
-- [ ] **Predictive batch scheduling** — Use POS sales and pre-order data to suggest production increases; calendar alerts for time-sensitive prep (e.g. day-before cold ferment); requires POS integration first
+- [ ] **Predictive batch scheduling** — Use POS + pre-order data to suggest production increases; calendar alerts for time-sensitive prep (e.g. day-before cold ferment). Requires POS integration.
 - [ ] **Customer order tracking**
-- [ ] **Inventory management**
-- [ ] **Staff scheduling**
 - [ ] **Equipment maintenance logs**
-- [ ] **Multi-location dashboard support**
-- [ ] **Role-based permissions** — Manager, supervisor, operator levels
+- [ ] **Role-based permissions** — Manager / Supervisor / Operator levels
+- [ ] **Multi-location dashboard** — Aggregate and per-location views in one account
 
 ---
 
-## 🐛 Current Website Bugs
+## 🔲 iOS & Play Store Launch
+- [ ] App Store + Play Store listings (metadata, screenshots, description)
+- [ ] Privacy policy page (required by both stores)
+- [ ] Terms of service page
+- [ ] App icon all sizes + splash screen
+- [ ] TestFlight beta + Play internal test track
+- [ ] IAP products configured in App Store Connect + Play Console
+- [ ] Push notifications (Expo/FCM) for shift reminders and batch alerts
+- [ ] Stripe webhooks hardened for mobile IAP
 
-- [ ] **Page wipe on action** — Performing any action on the website (cancelling/releasing a batch, marking an item as ordered, etc.) clears the entire page contents until a manual refresh. Affects every page. Must be fixed before launch — unacceptable UX.
-- [ ] **Archive feature missing from website** — The app has workflow archiving; the website does not. Needs parity.
-- [ ] **Team status display broken** — Team status panel is not displaying correctly. Should only show employees who are currently clocked in to that location — nothing else.
+---
+
+## 🗒️ Architecture Notes
+- `employment_status` lives on `network_member_roles` (the relationship), NOT `profiles`. Terminating an employee at your business never touches their Supabase auth account — they can still use the app and join other businesses.
+- `location_ids` array on `network_member_roles`: `null`/empty = access to all locations.
+- `isPremiumProfile()` in `lib/supabase.ts` is the single source of truth for tier checks — handles `role`, `subscription_status`, and trial expiry.
+- All dashboard fetch functions read `locationRef.current` (a `useRef`) rather than the `selectedLocationId` state variable. This prevents stale closure bugs where child component callbacks would see the initial `'all'` value.
+- `team_members` table may still exist from an old directory API iteration. New system uses `network_member_roles` exclusively. The SQL migration has an optional DROP statement.
