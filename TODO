@@ -1,20 +1,20 @@
 # Batch Maker — Master To-Do List
-_Last updated: 2026-02-24_
+_Last updated: 2026-02-25_
 
 ---
 
 ## 🐛 Bugs — Fix Before Launch
 
 - [x] **Page wipe on action** — Any action (cancel batch, mark ordered, etc.) cleared the entire page until manual refresh. **FIXED** in `dashboard.tsx` via `useRef` for `selectedLocationId` — fetch functions now always read the current location value, not a stale closure.
-- [ ] **Archive feature missing from website** — The app has workflow archiving; the website does not. Needs parity with the mobile app.
-- [ ] **Team status display broken** — Should only show employees currently clocked in at that location. Currently shows incorrect data. Fix: query `time_entries` where `clock_out IS NULL` and `owner_id = user.id`, then filter by `location_id` if a location is selected.
+- [x] **Archive feature missing from website** — Workflow archive/unarchive with restore now in `DashboardWorkflows.tsx`. Active workflows show an Archive button; archived workflows are hidden behind a collapsible "Show archived (n)" toggle with a Restore button. Matches mobile app behaviour.
+- [x] **Team status display broken** — Fixed in `dashboard.tsx` via `fetchClockedInMembers()` which queries `time_entries WHERE clock_out IS NULL AND owner_id = user.id`, then filters by `location_id` when a specific location is selected. Polls every 30 seconds and passes result down as `clockedInMembers` prop.
 
 ---
 
 ## 🟠 Pre-Launch — Core Features
 
 ### Account & Access
-- [ ] **Account tiers** — Maintain two separate account pages (standard and premium). Standard users must not see premium/production tools — both to avoid overwhelm and to maintain value in the premium tier.
+- [x] **Account tiers** — Maintain two separate account pages (standard and premium). Standard users must not see premium/production tools — both to avoid overwhelm and to maintain value in the premium tier.
 - [ ] **New user tutorial** — Interactive onboarding walkthrough for first-time users (tooltips, guided steps, sample workflow).
 
 ### Employee & Location
@@ -40,6 +40,15 @@ _Last updated: 2026-02-24_
 
 ## ✅ Completed
 
+### DashboardAnalytics.tsx
+- [x] Batch Reports Viewer section added below existing analytics — filterable list of all batch records, expandable detail rows (ingredients, waste details, notes), live summary bar (count, total cost, avg duration, waste count), CSV export of currently filtered results.
+
+### DashboardWorkflows.tsx
+- [x] Workflow archive/unarchive — Archive button on active workflows, collapsible "Show archived" section with Restore button. Uses `archived_at` timestamp on `workflows`. Mirrors mobile app behaviour.
+- [x] Toast notifications replacing `alert()` calls
+- [x] Active sessions derived from props (zero extra DB calls in component)
+- [x] Team Status card driven by `clockedInMembers` prop (clock-in based, not heartbeat-based)
+
 ### DashboardCalendar.tsx
 - [x] Force Delete stuck `in_progress` batches (cleans orphaned `batches` rows)
 - [x] Mark Done on `in_progress` batches
@@ -55,6 +64,13 @@ _Last updated: 2026-02-24_
 - [x] Repeat shift — weekly recurring modal with multi-employee support
 - [x] Tab bar: Calendar | All Shifts | Labour Report
 - [x] Labour Report tab — monthly hours/holiday/sick table per employee
+- [x] Save week as reusable schedule template ("Week A", "Week B") — stored in `schedule_templates` table
+- [x] Apply saved template to a target week in one click — offsets shifts to correct days from chosen Monday
+- [x] Bulk delete shifts by employee, status, and/or date range
+- [x] Export schedule to printable weekly view — generates HTML, opens in new tab with print button
+- [x] Hourly rate field per employee — stored on `network_member_roles.hourly_rate`, inline editable in Labour Report tab
+- [x] Labour cost report — actual hours × rate per employee, total footer, summary card
+- [x] Holiday allowance tracker — annual entitlement per employee (`network_member_roles.holiday_allowance`, default 28 days), inline editable, shows days used this month
 
 ### Employee Directory (pages/directory.tsx)
 - [x] No photo storage — initials avatar only
@@ -72,32 +88,22 @@ _Last updated: 2026-02-24_
 ### Backend / API
 - [x] `api/directory/status.ts` — replaces `blacklist.ts`, uses `getSupabaseClient()` pattern
 - [x] `canClockIn()` — blocks terminated/on_leave; holiday/sick shifts excluded from shift match
-- [x] `timeEntries.ts` — fixed `req.params` → `req.query.id`; `total_hours` calculated on clock-out and edit; `.single()` → `.maybeSingle()` on empty-safe queries; email notification ready to uncomment
+- [x] `timeEntries.ts` — fixed `req.params` → `req.query.id`; `total_hours` calculated on clock-out and edit; `.single()` → `.maybeSingle()` on empty-safe queries
 - [x] `pages/api/time-entries/[id].ts` — new dynamic route for edit/delete
-- [x] `lib/supabase.ts` — updated `Profile` type (trial, platform, business fields); added `getSupabaseAdmin()` for service-role operations; added `isPremiumProfile()` helper
-- [x] `dashboard.tsx` — page wipe bug fixed with `useRef`; uses `isPremiumProfile()` helper
+- [x] `lib/supabase.ts` — updated `Profile` type; added `getSupabaseAdmin()`; added `isPremiumProfile()` helper
+- [x] `dashboard.tsx` — page wipe bug fixed with `useRef`; `fetchClockedInMembers()` with 30s polling; `clockedInMembers` passed in `sharedProps`
 - [x] SQL migration: `migration_employee_directory.sql`
+- [x] SQL migration: `migration_schedule_features.sql` — adds `hourly_rate` + `holiday_allowance` to `network_member_roles`; creates `schedule_templates` table with RLS
 
 ---
 
-## 🔲 Up Next — Scheduling
-- [ ] Save/load week as a reusable schedule template ("Week A", "Week B")
-- [ ] Apply saved template to a target week in one click
-- [ ] Bulk delete shifts by employee or date range
-- [ ] Export schedule to PDF / printable weekly view
-
----
-
-## 🔲 Labour Reports
-- [ ] Hourly rate field on employee profile (stored on `network_member_roles`)
-- [ ] Labour cost report (hours × rate, by employee / location / week)
+## 🔲 Labour Reports — Remaining
 - [ ] Attach labour summary to end-of-day batch completion report
-- [ ] Server-side CSV export with complete data
+- [ ] Server-side CSV export with complete labour data
 
 ---
 
-## 🔲 Holiday & Absence
-- [ ] Holiday allowance tracker (days used vs. remaining per employee per year)
+## 🔲 Holiday & Absence — Remaining
 - [ ] Approval workflow for holiday requests (employee requests → owner approves/declines)
 - [ ] Absence calendar overlay across entire team
 
@@ -117,7 +123,7 @@ _Last updated: 2026-02-24_
 - [ ] **Customer order tracking**
 - [ ] **Equipment maintenance logs**
 - [ ] **Role-based permissions** — Manager / Supervisor / Operator levels
-- [ ] **Multi-location dashboard** — Aggregate and per-location views in one account
+
 
 ---
 
@@ -136,6 +142,9 @@ _Last updated: 2026-02-24_
 ## 🗒️ Architecture Notes
 - `employment_status` lives on `network_member_roles` (the relationship), NOT `profiles`. Terminating an employee at your business never touches their Supabase auth account — they can still use the app and join other businesses.
 - `location_ids` array on `network_member_roles`: `null`/empty = access to all locations.
+- `hourly_rate` and `holiday_allowance` also on `network_member_roles` — owner sets these per employee, not global.
+- `schedule_templates` stores shifts as a JSONB array of `{ day_of_week, assigned_to, start_time, end_time, role, ... }`. Applied templates offset each shift from the chosen Monday by `day_of_week`.
 - `isPremiumProfile()` in `lib/supabase.ts` is the single source of truth for tier checks — handles `role`, `subscription_status`, and trial expiry.
 - All dashboard fetch functions read `locationRef.current` (a `useRef`) rather than the `selectedLocationId` state variable. This prevents stale closure bugs where child component callbacks would see the initial `'all'` value.
-- `team_members` table may still exist from an old directory API iteration. New system uses `network_member_roles` exclusively. The SQL migration has an optional DROP statement.
+- `team_members` table may still exist from an old directory API iteration. New system uses `network_member_roles` exclusively.
+- `clockedInMembers` is fetched by `dashboard.tsx` and passed down as a prop — components never query `time_entries` directly.

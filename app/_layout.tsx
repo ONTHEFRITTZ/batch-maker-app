@@ -8,9 +8,21 @@ import { Stack } from 'expo-router';
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
 import * as Linking from 'expo-linking';
+import * as Notifications from 'expo-notifications';        // ← ADDED
 import CustomHeader from './components/CustomHeader';
 import { initializeReports } from '../services/reports';
 import { ThemeProvider } from '../contexts/ThemeContext';
+
+// ── Tell Expo how to show notifications when the app is open ─────────────────
+Notifications.setNotificationHandler({                      // ← ADDED
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 Linking.addEventListener('url', (event) => {
   console.log('GLOBAL deep link:', event.url);

@@ -53,6 +53,25 @@ export interface BatchCompletionReport {
   ingredientsSkipped?: string[];
 }
 
+// ── Labour summary types ───────────────────────────────────────────────────────
+
+export interface LabourEntry {
+  userId: string;
+  name: string;
+  clockIn: string;       // ISO string
+  clockOut: string | null;
+  totalHours: number;
+  hourlyRate: number;
+  labourCost: number;
+}
+
+export interface LabourSummary {
+  entries: LabourEntry[];
+  totalHours: number;
+  totalLabourCost: number;
+  generatedAt: string;   // ISO string
+}
+
 export interface DailyReport {
   id: string;
   date: string;
@@ -64,6 +83,7 @@ export interface DailyReport {
   totalYield?: { [unit: string]: number };
   environmentalReports: EnvironmentalReport[];
   batchCompletions: BatchCompletionReport[];
+  labourSummary?: LabourSummary;   // ← NEW
   userId?: string;
 }
 
@@ -406,7 +426,6 @@ export async function createWasteReport(
     ingredientsUsed: ingredientsDeducted,
     totalCost,
     userId: userId || undefined,
-    // Waste-specific
     wasted: true,
     wastedAtStep,
     wastedAtStepName,
@@ -418,7 +437,6 @@ export async function createWasteReport(
   reportsData.batchCompletions.push(report);
   await saveReports();
 
-  // Sync waste report to Supabase
   if (userId) {
     try {
       const { error } = await supabase.from('batch_completion_reports').upsert({
@@ -487,20 +505,91 @@ export async function deleteBatchCompletionReport(id: string): Promise<void> {
 }
 
 // ============================================
+// LABOUR SUMMARY (fetched from Supabase)
+// ============================================
+
+async function fetchLabourSummaryForDate(
+  userId: string,
+  date: string
+): Promise<LabourSummary> {
+  // date = 'YYYY-MM-DD'
+  const dayStart = `${date}T00:00:00.000Z`;
+  const dayEnd   = `${date}T23:59:59.999Z`;
+
+  // 1. Fetch all time entries for this owner on this date
+  const { data: entries, error: entriesError } = await supabase
+    .from('time_entries')
+    .select('user_id, clock_in, clock_out, total_hours')
+    .eq('owner_id', userId)
+    .gte('clock_in', dayStart)
+    .lte('clock_in', dayEnd);
+
+  if (entriesError || !entries?.length) {
+    return { entries: [], totalHours: 0, totalLabourCost: 0, generatedAt: new Date().toISOString() };
+  }
+
+  // 2. Fetch hourly rates + names for all users who clocked in
+  const userIds = [...new Set(entries.map(e => e.user_id))];
+
+  const { data: roles } = await supabase
+    .from('network_member_roles')
+    .select('user_id, hourly_rate')
+    .eq('owner_id', userId)
+    .in('user_id', userIds);
+
+  const { data: profiles } = await supabase
+    .from('profiles')
+    .select('id, device_name, email')
+    .in('id', userIds);
+
+  const rateMap: Record<string, number> = {};
+  roles?.forEach((r: any) => { rateMap[r.user_id] = r.hourly_rate || 0; });
+
+  const nameMap: Record<string, string> = {};
+  profiles?.forEach((p: any) => { nameMap[p.id] = p.device_name || p.email || 'Unknown'; });
+
+  // 3. Build per-entry labour data
+  const labourEntries: LabourEntry[] = entries.map(e => {
+    const hours = e.total_hours ?? 0;
+    const rate  = rateMap[e.user_id] ?? 0;
+    return {
+      userId:     e.user_id,
+      name:       nameMap[e.user_id] ?? 'Unknown',
+      clockIn:    e.clock_in,
+      clockOut:   e.clock_out,
+      totalHours: hours,
+      hourlyRate: rate,
+      labourCost: Math.round(hours * rate * 100) / 100,
+    };
+  });
+
+  const totalHours      = labourEntries.reduce((s, e) => s + e.totalHours, 0);
+  const totalLabourCost = labourEntries.reduce((s, e) => s + e.labourCost, 0);
+
+  return {
+    entries: labourEntries,
+    totalHours: Math.round(totalHours * 100) / 100,
+    totalLabourCost: Math.round(totalLabourCost * 100) / 100,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// ============================================
 // DAILY REPORTS
 // ============================================
 
 export async function generateDailyReport(date?: string): Promise<DailyReport> {
   const targetDate = date || getTodayDateString();
-  const timestamp = Date.now();
+  const timestamp  = Date.now();
+  const userId     = await getCurrentUserId();
 
-  const envReports = getEnvironmentalReports(targetDate);
+  const envReports   = getEnvironmentalReports(targetDate);
   const batchReports = getBatchCompletionReports(targetDate);
 
-  const totalBatches = batchReports.length;
+  const totalBatches: number = batchReports.length;
   const batchesByWorkflow: { [workflowId: string]: number } = {};
-  let totalDuration = 0;
-  let countWithDuration = 0;
+  let totalDuration      = 0;
+  let countWithDuration  = 0;
   let totalIngredientCost = 0;
   const totalYield: { [unit: string]: number } = {};
 
@@ -515,7 +604,20 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
     }
   });
 
-  const averageDuration = countWithDuration > 0 ? Math.round(totalDuration / countWithDuration) : 0;
+  const averageDuration = countWithDuration > 0
+    ? Math.round(totalDuration / countWithDuration)
+    : 0;
+
+  // ── Fetch labour summary from Supabase (admin-only data) ──────────────────
+  let labourSummary: LabourSummary | undefined;
+  if (userId) {
+    try {
+      labourSummary = await fetchLabourSummaryForDate(userId, targetDate);
+      console.log(`✅ Labour summary: ${labourSummary.entries.length} entries, £${labourSummary.totalLabourCost}`);
+    } catch (err) {
+      console.warn('Labour summary fetch failed (non-fatal):', err);
+    }
+  }
 
   const report: DailyReport = {
     id: `daily_${targetDate}`,
@@ -528,11 +630,63 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
     totalYield: Object.keys(totalYield).length > 0 ? totalYield : undefined,
     environmentalReports: envReports,
     batchCompletions: batchReports,
+    labourSummary,
+    userId: userId || undefined,
   };
 
+  // ── Replace any existing daily report for this date ───────────────────────
   reportsData.daily = reportsData.daily.filter((r) => r.date !== targetDate);
   reportsData.daily.push(report);
   await saveReports();
+
+  // ── Archive to Supabase reports table ────────────────────────────────────
+  if (userId) {
+    try {
+      // No UPDATE policy exists, so delete any existing record for this date first
+      await supabase
+        .from('reports')
+        .delete()
+        .eq('user_id', userId)
+        .eq('type', 'daily')
+        .filter('data->>date', 'eq', report.date);
+
+      const { error } = await supabase.from('reports').insert({
+        id: report.id,
+        user_id: userId,
+        type: 'daily',
+        data: {
+          date: report.date,
+          totalBatches: report.totalBatches,
+          batchesByWorkflow: report.batchesByWorkflow,
+          averageDuration: report.averageDuration,
+          totalIngredientCost: report.totalIngredientCost ?? null,
+          totalYield: report.totalYield ?? null,
+          labourSummary: report.labourSummary ?? null,
+          environmentalReports: report.environmentalReports,
+          batchCompletions: report.batchCompletions,
+        },
+        timestamp: new Date(report.timestamp).toISOString(),
+      });
+
+      if (error) {
+        console.error('Failed to archive daily report to Supabase:', error);
+      } else {
+        console.log('✅ Daily report archived to Supabase');
+
+        // ── Clear today's local batch + environmental data (fresh start) ───
+        reportsData.batchCompletions = reportsData.batchCompletions.filter(
+          (r) => r.date !== targetDate
+        );
+        reportsData.environmental = reportsData.environmental.filter(
+          (r) => r.date !== targetDate
+        );
+        await saveReports();
+        console.log('🧹 Local data cleared for', targetDate);
+      }
+    } catch (err) {
+      console.error('Error archiving daily report:', err);
+    }
+  }
 
   return report;
 }
@@ -558,7 +712,6 @@ export async function forceSyncToSupabase(): Promise<void> {
   console.log("🔄 Force syncing all reports to Supabase...");
   for (const report of reportsData.batchCompletions) {
     if (report.wasted) {
-      // Use waste sync path for wasted reports
       const userId = await getCurrentUserId();
       if (userId) {
         await supabase.from('batch_completion_reports').upsert({
@@ -611,12 +764,12 @@ export function getWorkflowStats(workflowId: string): {
   totalYield?: { [unit: string]: number };
 } {
   const batches = reportsData.batchCompletions.filter((r) => r.workflowId === workflowId);
-  const wasted = batches.filter((r) => r.wasted);
+  const wasted  = batches.filter((r) => r.wasted);
 
-  let totalDuration = 0;
+  let totalDuration    = 0;
   let countWithDuration = 0;
   let lastCompleted: number | undefined;
-  let totalCost = 0;
+  let totalCost        = 0;
   const totalYield: { [unit: string]: number } = {};
 
   batches.forEach((batch) => {
@@ -631,8 +784,10 @@ export function getWorkflowStats(workflowId: string): {
 
   return {
     totalBatches: batches.length,
-    totalWasted: wasted.length,
-    averageDuration: countWithDuration > 0 ? Math.round(totalDuration / countWithDuration) : 0,
+    totalWasted:  wasted.length,
+    averageDuration: countWithDuration > 0
+      ? Math.round(totalDuration / countWithDuration)
+      : 0,
     lastCompleted,
     totalCost: totalCost > 0 ? totalCost : undefined,
     totalYield: Object.keys(totalYield).length > 0 ? totalYield : undefined,
@@ -647,7 +802,7 @@ export function getDateRangeReports(
   batchCompletions: BatchCompletionReport[];
 } {
   return {
-    environmental: reportsData.environmental.filter((r) => r.date >= startDate && r.date <= endDate),
+    environmental:  reportsData.environmental.filter((r) => r.date >= startDate && r.date <= endDate),
     batchCompletions: reportsData.batchCompletions.filter((r) => r.date >= startDate && r.date <= endDate),
   };
 }
@@ -663,10 +818,10 @@ export function exportReportsAsJSON(): string {
 export function generateBatchReportsCSV(): string {
   let csv = "Date,Time,Batch Name,Workflow,Station,Size,Duration (min),Cost,Yield,Wasted,Wasted At Step,Waste Reason,Notes\n";
   reportsData.batchCompletions.forEach((report) => {
-    const cost = report.totalCost ? `${report.totalCost.toFixed(2)}` : "";
-    const yieldStr = report.yieldAmount && report.yieldUnit ? `${report.yieldAmount}${report.yieldUnit}` : "";
-    const notes = (report.notes || "").replace(/,/g, ";").replace(/\n/g, " ");
-    const wastedStr = report.wasted ? "Yes" : "No";
+    const cost       = report.totalCost ? `${report.totalCost.toFixed(2)}` : "";
+    const yieldStr   = report.yieldAmount && report.yieldUnit ? `${report.yieldAmount}${report.yieldUnit}` : "";
+    const notes      = (report.notes || "").replace(/,/g, ";").replace(/\n/g, " ");
+    const wastedStr  = report.wasted ? "Yes" : "No";
     const wastedStep = report.wasted ? `Step ${(report.wastedAtStep ?? 0) + 1}: ${report.wastedAtStepName || ''}` : "";
     const wasteReason = (report.waste_notes || "").replace(/,/g, ";");
     csv += `${report.date},${report.time},"${report.batchName}","${report.workflowName}",${report.completedBy},${report.batchSizeMultiplier}x,${report.actualDuration || ""},${cost},${yieldStr},${wastedStr},"${wastedStep}","${wasteReason}","${notes}"\n`;
@@ -684,13 +839,15 @@ export function generateEnvironmentalReportsCSV(): string {
 }
 
 export function generateDailyReportsCSV(): string {
-  let csv = "Date,Total Batches,Avg Duration (min),Total Cost,Workflows\n";
+  let csv = "Date,Total Batches,Avg Duration (min),Total Cost,Workflows,Total Labour Hours,Total Labour Cost\n";
   reportsData.daily.forEach((report) => {
     const workflows = Object.entries(report.batchesByWorkflow)
       .map(([wf, count]) => `${wf}:${count}`)
       .join("; ");
-    const cost = report.totalIngredientCost ? `${report.totalIngredientCost.toFixed(2)}` : "";
-    csv += `${report.date},${report.totalBatches},${report.averageDuration},${cost},"${workflows}"\n`;
+    const cost         = report.totalIngredientCost ? `${report.totalIngredientCost.toFixed(2)}` : "";
+    const labourHours  = report.labourSummary ? report.labourSummary.totalHours.toFixed(2) : "";
+    const labourCost   = report.labourSummary ? report.labourSummary.totalLabourCost.toFixed(2) : "";
+    csv += `${report.date},${report.totalBatches},${report.averageDuration},${cost},"${workflows}",${labourHours},${labourCost}\n`;
   });
   return csv;
 }

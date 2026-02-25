@@ -23,6 +23,7 @@ import { supabase } from "../lib/supabase";
 import { SyncStatusBar } from "../app/components/SyncStatusBar";
 import { useConnectionStatus } from "../hooks/useConnectionStatus";
 import { useAppInit } from "../hooks/useAppInit";
+import { registerPushToken } from "../utils/pushNotifications";  // ← ADDED
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -91,7 +92,10 @@ export default function HomeScreen() {
         const refresh_token = queryParams.get("refresh_token") || hashParams.get("refresh_token");
         if (access_token && refresh_token) {
           const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-          if (error) Alert.alert("Sign In Error", error.message);
+          if (error) { Alert.alert("Sign In Error", error.message); return; }
+
+          // ── Register push token now that we have a valid session ───────────
+          await registerPushToken(access_token, 'batchmaker-app');  // ← ADDED
         }
       }
     } catch (error: any) {
