@@ -84,6 +84,14 @@
     "plugins": [
       "expo-router",
       [
+        "expo-notifications",
+        {
+          "icon": "./app/assets/images/adaptive-icon.png",
+          "color": "#ffffff",
+          "sounds": []
+        }
+      ],
+      [
         "expo-speech-recognition",
         {
           "microphonePermission": "Allow Batch Maker to use your microphone for voice commands.",

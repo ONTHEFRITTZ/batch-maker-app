@@ -1,6 +1,6 @@
 {
   "cli": {
-    "version": ">= 16.28.0",
+    "version": ">= 18.0.0",
     "appVersionSource": "remote"
   },
   "build": {
@@ -32,8 +32,7 @@
         "autoIncrement": true
       },
       "ios": {
-        "simulator": false,
-        "bundleIdentifier": "com.batchmaker.app"
+        "simulator": false
       },
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://fjcpscyxrppcderqzgpa.supabase.co",
@@ -47,7 +46,6 @@
         "autoIncrement": true
       },
       "ios": {
-        "bundleIdentifier": "com.batchmaker.app",
         "autoIncrement": true
       },
       "env": {

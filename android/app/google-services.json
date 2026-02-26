@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "874778775103",
+    "project_id": "batch-maker-342c5",
+    "storage_bucket": "batch-maker-342c5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:874778775103:android:8aaac8677644ac5e08328a",
+        "android_client_info": {
+          "package_name": "com.batchmaker.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBDVxiMT2k5rYL20UoYpvgoEmMLm4D10KU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
