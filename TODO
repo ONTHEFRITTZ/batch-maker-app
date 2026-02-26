@@ -104,14 +104,13 @@ _Last updated: 2026-02-25_
 ---
 
 ## 🔲 Holiday & Absence — Remaining
-- [ ] Approval workflow for holiday requests (employee requests → owner approves/declines)
+- [x] Approval workflow for holiday requests (employee requests → owner approves/declines)
 - [ ] Absence calendar overlay across entire team
 
 ---
 
 ## 🟡 Post-Launch — Growth Features
 - [ ] **POS integration** — Square, Toast, Lightspeed, Clover etc. Pull in sales data for costing and revenue analytics. Export to CSV/XLSX.
-- [ ] **Web embed tool** — Paid embeddable widget for third-party sites ("Powered by Batch Maker").
 - [ ] **Language packs** — Downloadable UI translations for multilingual teams.
 - [ ] **QuickBooks integration** — Sync cost tracking and financial data.
 - [ ] **Google Calendar sync** — View and schedule batches from Google Calendar.
@@ -135,7 +134,6 @@ _Last updated: 2026-02-25_
 - [ ] TestFlight beta + Play internal test track
 - [ ] IAP products configured in App Store Connect + Play Console
 - [ ] Push notifications (Expo/FCM) for shift reminders and batch alerts
-- [ ] Stripe webhooks hardened for mobile IAP
 
 ---
 

@@ -1,11 +1,11 @@
 import { useRouter, useFocusEffect } from "expo-router";
 import React, { FC, useEffect, useState, useCallback } from "react";
-import { 
+import {
   FlatList, Text, View, TouchableOpacity, StyleSheet, Alert,
   TextInput, Modal, Animated, ScrollView, Switch
 } from "react-native";
-import { 
-  getWorkflows, getBatches, createBatch, duplicateBatch, 
+import {
+  getWorkflows, getBatches, createBatch, duplicateBatch,
   renameBatch, deleteBatch, batchHasProgress, getMostUrgentTimer,
   batchHasExpiredTimer, getTimerStatus, formatTimeRemaining,
   claimBatch, unclaimBatch, isBatchClaimedByMe,
@@ -14,7 +14,29 @@ import {
 } from "../../services/database";
 import SettingsModal from "../components/SettingsModal";
 import { useTheme } from "../../contexts/ThemeContext";
+import { supabase } from "../../lib/supabase";
 
+// ─── Clock-in state ────────────────────────────────────────────────────────
+interface ClockInState {
+  isClockedIn: boolean;
+  locationId: string | null;
+}
+
+async function getClockInState(userId: string): Promise<ClockInState> {
+  const { data } = await supabase
+    .from('time_entries')
+    .select('location_id')
+    .eq('user_id', userId)
+    .is('clock_out', null)
+    .maybeSingle();
+
+  if (data) {
+    return { isClockedIn: true, locationId: data.location_id };
+  }
+  return { isClockedIn: false, locationId: null };
+}
+
+// ─── BatchItem (unchanged) ────────────────────────────────────────────────
 const BatchItem: FC<{
   item: Batch;
   workflows: Workflow[];
@@ -32,24 +54,11 @@ const BatchItem: FC<{
   onClaim: (id: string) => void;
   onPress: (id: string) => void;
 }> = ({
-  item,
-  workflows,
-  contextMenuBatch,
-  renamingBatch,
-  renameText,
-  colors,
-  isClaimed,
-  setContextMenuBatch,
-  setRenamingBatch,
-  setRenameText,
-  onRename,
-  onDuplicate,
-  onDelete,
-  onClaim,
-  onPress,
+  item, workflows, contextMenuBatch, renamingBatch, renameText,
+  colors, isClaimed, setContextMenuBatch, setRenamingBatch, setRenameText,
+  onRename, onDuplicate, onDelete, onClaim, onPress,
 }) => {
   const workflow = workflows.find(w => w.id === item.workflowId);
-  
   if (!workflow) return null;
 
   const hasExpired = batchHasExpiredTimer(item);
@@ -67,7 +76,6 @@ const BatchItem: FC<{
 
   const modeIcon = item.mode === 'bake-today' ? '🟢' : '🔵';
   const modeText = item.mode === 'bake-today' ? 'Bake Today' : 'Cold Ferment';
-
   const flashAnim = React.useRef(new Animated.Value(1)).current;
 
   React.useEffect(() => {
@@ -120,17 +128,12 @@ const BatchItem: FC<{
               </View>
             )}
           </View>
-
           <View style={styles.batchInfo}>
             <Text style={[styles.batchMode, { color: colors.textSecondary }]}>{modeIcon} {modeText}</Text>
-            <Text style={[
-              styles.batchTimer,
-              { color: hasExpired ? colors.error : colors.primary }
-            ]}>
+            <Text style={[styles.batchTimer, { color: hasExpired ? colors.error : colors.primary }]}>
               {timerDisplay}
             </Text>
           </View>
-
           {item.activeTimers.length > 1 && (
             <Text style={[styles.timerCount, { color: colors.textSecondary }]}>
               ({item.activeTimers.length} timers active)
@@ -141,25 +144,19 @@ const BatchItem: FC<{
 
       {isContextMenuOpen && (
         <View style={[styles.contextMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
-            onPress={() => {
-              setRenamingBatch(item.id);
-              setRenameText(item.name);
-              setContextMenuBatch(null);
-            }}
+            onPress={() => { setRenamingBatch(item.id); setRenameText(item.name); setContextMenuBatch(null); }}
           >
             <Text style={[styles.contextMenuText, { color: colors.text }]}>Rename</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
             onPress={() => onDuplicate(item.id)}
           >
             <Text style={[styles.contextMenuText, { color: colors.text }]}>Duplicate</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
             onPress={() => onClaim(item.id)}
           >
@@ -167,18 +164,13 @@ const BatchItem: FC<{
               {isClaimed ? 'Release' : 'Claim'}
             </Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.contextMenuItem, { borderBottomColor: colors.border, backgroundColor: colors.error + '15' }]}
             onPress={() => onDelete(item.id)}
           >
             <Text style={[styles.contextMenuText, { color: colors.error }]}>Delete</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.contextMenuItem}
-            onPress={() => setContextMenuBatch(null)}
-          >
+          <TouchableOpacity style={styles.contextMenuItem} onPress={() => setContextMenuBatch(null)}>
             <Text style={[styles.contextMenuText, { color: colors.textSecondary }]}>Cancel</Text>
           </TouchableOpacity>
         </View>
@@ -187,6 +179,7 @@ const BatchItem: FC<{
   );
 };
 
+// ─── WorkflowItem (unchanged) ─────────────────────────────────────────────
 const WorkflowItem: FC<{
   item: Workflow;
   colors: any;
@@ -207,9 +200,7 @@ const WorkflowItem: FC<{
         <View style={styles.workflowHeader}>
           <View style={{ flex: 1 }}>
             <Text style={[styles.workflowName, { color: colors.text }]}>{item.name}</Text>
-            <Text style={[styles.workflowSteps, { color: colors.textSecondary }]}>
-              {item.steps.length} steps
-            </Text>
+            <Text style={[styles.workflowSteps, { color: colors.textSecondary }]}>{item.steps.length} steps</Text>
             {item.claimedBy && !isClaimed && (
               <Text style={[styles.claimedLabel, { color: colors.warning }]}>
                 {item.claimedByName || 'Another station'}
@@ -226,17 +217,13 @@ const WorkflowItem: FC<{
 
       {contextMenuOpen && (
         <View style={[styles.contextMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
             onPress={() => onSelectWorkflow(item.id)}
           >
             <Text style={[styles.contextMenuText, { color: colors.text }]}>Create Batch</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.contextMenuItem}
-            onPress={() => onLongPress('')}
-          >
+          <TouchableOpacity style={styles.contextMenuItem} onPress={() => onLongPress('')}>
             <Text style={[styles.contextMenuText, { color: colors.textSecondary }]}>Cancel</Text>
           </TouchableOpacity>
         </View>
@@ -245,6 +232,7 @@ const WorkflowItem: FC<{
   );
 };
 
+// ─── Main screen ──────────────────────────────────────────────────────────
 export const WorkflowSelectScreen: FC = () => {
   const router = useRouter();
   const { colors } = useTheme();
@@ -264,16 +252,18 @@ export const WorkflowSelectScreen: FC = () => {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayedBatches, setDisplayedBatches] = useState<Batch[]>([]);
 
-  // Timer tick — keeps batch timers live without hitting Supabase
+  // ── Clock-in state ──────────────────────────────────────────────────────
+  const [clockInState, setClockInState] = useState<ClockInState>({ isClockedIn: false, locationId: null });
+
+  // Timer tick
   useEffect(() => {
     const interval = setInterval(() => {
-      const freshBatches = getBatches();
-      setBatches([...freshBatches]);
+      setBatches([...getBatches()]);
     }, 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // Refresh from local cache when screen gains focus — no Supabase calls
+  // Reload on focus
   useFocusEffect(
     useCallback(() => {
       loadData();
@@ -282,20 +272,43 @@ export const WorkflowSelectScreen: FC = () => {
 
   const loadData = async () => {
     const userId = await getDeviceId();
-    if (userId) setCurrentUserId(userId);
+    if (userId) {
+      setCurrentUserId(userId);
+      // Check clock-in state from Supabase
+      const clockState = await getClockInState(userId);
+      setClockInState(clockState);
+    }
 
-    // getWorkflows() returns local cache instantly — no network wait
     const allWorkflows = await getWorkflows();
     setWorkflows(allWorkflows);
     setBatches(getBatches());
   };
 
-  // Filter workflows list
+  // ── Filter workflows based on clock-in state ────────────────────────────
+  // Rule:
+  //   Not clocked in  → show only personal workflows (location_id = null)
+  //   Clocked in      → show only work workflows (location_id = clocked-in location)
   useEffect(() => {
-    setDisplayedWorkflows(showArchived ? workflows : workflows.filter(w => !w.archived));
-  }, [showArchived, workflows]);
+    let filtered = workflows;
 
-  // Filter batches for "My Batches" tab — based on batch.claimed_by, not workflow
+    // Apply clock-in filter first
+    if (clockInState.isClockedIn && clockInState.locationId) {
+      // Clocked in — show work workflows for this location only
+      filtered = filtered.filter(w => w.location_id === clockInState.locationId);
+    } else {
+      // Not clocked in — show personal workflows only
+      filtered = filtered.filter(w => !w.location_id);
+    }
+
+    // Then apply archive filter on top
+    if (!showArchived) {
+      filtered = filtered.filter(w => !w.archived);
+    }
+
+    setDisplayedWorkflows(filtered);
+  }, [showArchived, workflows, clockInState]);
+
+  // Filter batches for "My Batches" tab
   useEffect(() => {
     if (showMyBatches && currentUserId) {
       setDisplayedBatches(batches.filter(b => b.claimed_by === currentUserId));
@@ -322,22 +335,10 @@ export const WorkflowSelectScreen: FC = () => {
   const handleDeleteBatch = async (batchId: string) => {
     const hasProgress = batchHasProgress(batchId);
     if (hasProgress) {
-      Alert.alert(
-        'Delete Batch?',
-        'This batch has progress. Are you sure?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { 
-            text: 'Delete', 
-            style: 'destructive',
-            onPress: async () => {
-              await deleteBatch(batchId);
-              setContextMenuBatch(null);
-              await loadData();
-            }
-          }
-        ]
-      );
+      Alert.alert('Delete Batch?', 'This batch has progress. Are you sure?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: async () => { await deleteBatch(batchId); setContextMenuBatch(null); await loadData(); } }
+      ]);
     } else {
       await deleteBatch(batchId);
       setContextMenuBatch(null);
@@ -425,43 +426,41 @@ export const WorkflowSelectScreen: FC = () => {
     );
   };
 
-  const renderWorkflow = ({ item, contextMenuOpen, onLongPress }: { item: Workflow; contextMenuOpen: boolean; onLongPress: (id: string) => void }) => {
-    const hasActiveBatches = batches.some(b => b.workflowId === item.id);
-    // Workflow-level claim display (who has claimed this recipe template)
-    const isClaimed = item.claimedBy === currentUserId;
-    return (
-      <WorkflowItem
-        item={item}
-        colors={colors}
-        hasActiveBatches={hasActiveBatches}
-        isClaimed={isClaimed}
-        contextMenuOpen={contextMenuOpen}
-        onSelectWorkflow={handleSelectWorkflow}
-        onLongPress={onLongPress}
-      />
-    );
-  };
+  // ── Empty state message based on clock-in ──────────────────────────────
+  function getEmptyMessage() {
+    if (clockInState.isClockedIn) {
+      return { main: 'No workflows at this location', sub: 'Ask your manager to add workflows for this location' };
+    }
+    return { main: 'No personal workflows', sub: 'Create a workflow or clock in to see workplace workflows' };
+  }
+
+  const emptyMsg = getEmptyMessage();
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+
+      {/* ── Clock-in status banner ── */}
+      <View style={[
+        styles.clockInBanner,
+        { backgroundColor: clockInState.isClockedIn ? colors.success + '18' : colors.surface,
+          borderBottomColor: clockInState.isClockedIn ? colors.success + '40' : colors.border }
+      ]}>
+        <Text style={[styles.clockInBannerText, { color: clockInState.isClockedIn ? colors.success : colors.textSecondary }]}>
+          {clockInState.isClockedIn ? '🟢 Clocked in — showing workplace workflows' : '⚪ Not clocked in — showing personal workflows'}
+        </Text>
+      </View>
+
       <View style={[styles.toggleBar, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
         <TouchableOpacity
-          style={[
-            styles.toggleOption,
-            !showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }
-          ]}
+          style={[styles.toggleOption, !showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }]}
           onPress={() => setShowMyBatches(false)}
         >
           <Text style={[styles.toggleText, { color: !showMyBatches ? colors.primary : colors.textSecondary }]}>
             All Workflows
           </Text>
         </TouchableOpacity>
-
         <TouchableOpacity
-          style={[
-            styles.toggleOption,
-            showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }
-          ]}
+          style={[styles.toggleOption, showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }]}
           onPress={() => setShowMyBatches(true)}
         >
           <Text style={[styles.toggleText, { color: showMyBatches ? colors.primary : colors.textSecondary }]}>
@@ -476,9 +475,7 @@ export const WorkflowSelectScreen: FC = () => {
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Active Batches</Text>
             <View style={styles.listContent}>
               {displayedBatches.map(item => (
-                <View key={item.id}>
-                  {renderBatch({ item })}
-                </View>
+                <View key={item.id}>{renderBatch({ item })}</View>
               ))}
             </View>
           </View>
@@ -498,33 +495,34 @@ export const WorkflowSelectScreen: FC = () => {
                 />
               </View>
             </View>
+
             {displayedWorkflows.length === 0 ? (
               <View style={styles.emptyState}>
-                <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                  {showArchived ? 'No archived workflows' : 'No workflows yet'}
-                </Text>
-                <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
-                  {showArchived ? 'Archive workflows by long-pressing them' : 'Tap settings to import'}
-                </Text>
+                <Text style={[styles.emptyText, { color: colors.textSecondary }]}>{emptyMsg.main}</Text>
+                <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>{emptyMsg.sub}</Text>
               </View>
             ) : (
               <View style={styles.listContent}>
                 {displayedWorkflows.map(item => (
                   <View key={item.id}>
-                    {renderWorkflow({ 
-                      item, 
-                      contextMenuOpen: contextMenuWorkflow === item.id,
-                      onLongPress: (id) => setContextMenuWorkflow(id === '' ? null : id)
-                    })}
+                    <WorkflowItem
+                      item={item}
+                      colors={colors}
+                      hasActiveBatches={batches.some(b => b.workflowId === item.id)}
+                      isClaimed={item.claimedBy === currentUserId}
+                      contextMenuOpen={contextMenuWorkflow === item.id}
+                      onSelectWorkflow={handleSelectWorkflow}
+                      onLongPress={(id) => setContextMenuWorkflow(id === '' ? null : id)}
+                    />
                     {contextMenuWorkflow === item.id && (
                       <View style={[styles.contextMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
                           onPress={() => handleEditWorkflow(item.id)}
                         >
                           <Text style={[styles.contextMenuText, { color: colors.text }]}>Edit Workflow</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={[styles.contextMenuItem, { borderBottomColor: colors.border }]}
                           onPress={() => handleArchiveWorkflow(item.id)}
                         >
@@ -532,7 +530,7 @@ export const WorkflowSelectScreen: FC = () => {
                             {item.archived ? 'Unarchive' : 'Archive'}
                           </Text>
                         </TouchableOpacity>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={styles.contextMenuItem}
                           onPress={() => setContextMenuWorkflow(null)}
                         >
@@ -557,7 +555,7 @@ export const WorkflowSelectScreen: FC = () => {
         )}
       </ScrollView>
 
-      <TouchableOpacity 
+      <TouchableOpacity
         style={[styles.settingsButton, { backgroundColor: colors.primary }]}
         onPress={() => setSettingsVisible(true)}
       >
@@ -566,7 +564,7 @@ export const WorkflowSelectScreen: FC = () => {
         <View style={styles.line} />
       </TouchableOpacity>
 
-      <SettingsModal 
+      <SettingsModal
         visible={settingsVisible}
         onClose={() => { setSettingsVisible(false); loadData(); }}
         onWorkflowsUpdated={loadData}
@@ -578,14 +576,14 @@ export const WorkflowSelectScreen: FC = () => {
         animationType="fade"
         onRequestClose={() => setShowNewBatchModal(false)}
       >
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
           onPress={() => setShowNewBatchModal(false)}
         >
           <View style={[styles.modeModal, { backgroundColor: colors.surface }]}>
             <Text style={[styles.modeModalTitle, { color: colors.text }]}>Create New Batch</Text>
-            
+
             <View style={styles.sizeSection}>
               <Text style={[styles.sizeSectionLabel, { color: colors.textSecondary }]}>Batch Size</Text>
               <View style={styles.sizeOptions}>
@@ -610,14 +608,14 @@ export const WorkflowSelectScreen: FC = () => {
             {selectedWorkflow && workflows.find(w => w.id === selectedWorkflow)?.show_ferment_prompt !== false && (
               <>
                 <Text style={[styles.modeSectionLabel, { color: colors.textSecondary }]}>Select Mode</Text>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.modeButton, { backgroundColor: colors.success + '20', borderColor: colors.success }]}
                   onPress={() => handleCreateBatch('bake-today')}
                 >
                   <Text style={styles.modeButtonIcon}>🟢</Text>
                   <Text style={[styles.modeButtonText, { color: colors.text }]}>Bake Today</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.modeButton, { backgroundColor: colors.primary + '20', borderColor: colors.primary }]}
                   onPress={() => handleCreateBatch('cold-ferment')}
                 >
@@ -628,7 +626,7 @@ export const WorkflowSelectScreen: FC = () => {
             )}
 
             {selectedWorkflow && workflows.find(w => w.id === selectedWorkflow)?.show_ferment_prompt === false && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.modeButton, { backgroundColor: colors.primary + '20', borderColor: colors.primary, marginTop: 12 }]}
                 onPress={() => handleCreateBatch('bake-today')}
               >
@@ -636,7 +634,7 @@ export const WorkflowSelectScreen: FC = () => {
               </TouchableOpacity>
             )}
 
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.modeCancelButton}
               onPress={() => { setShowNewBatchModal(false); setSelectedWorkflow(null); setBatchSizeMultiplier(1); }}
             >
@@ -651,6 +649,8 @@ export const WorkflowSelectScreen: FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  clockInBanner: { paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: 1 },
+  clockInBannerText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
   toggleBar: { flexDirection: 'row', borderBottomWidth: 1 },
   toggleOption: { flex: 1, paddingVertical: 16, alignItems: 'center' },
   toggleText: { fontSize: 16, fontWeight: '600' },
