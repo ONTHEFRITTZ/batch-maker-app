@@ -1,148 +1,445 @@
 # Batch Maker — Master To-Do List
-_Last updated: 2026-02-25_
+_Last updated: 2026-02-26_
 
 ---
 
-## 🐛 Bugs — Fix Before Launch
+## 🐛 Bugs — All Fixed ✅
 
-- [x] **Page wipe on action** — Any action (cancel batch, mark ordered, etc.) cleared the entire page until manual refresh. **FIXED** in `dashboard.tsx` via `useRef` for `selectedLocationId` — fetch functions now always read the current location value, not a stale closure.
-- [x] **Archive feature missing from website** — Workflow archive/unarchive with restore now in `DashboardWorkflows.tsx`. Active workflows show an Archive button; archived workflows are hidden behind a collapsible "Show archived (n)" toggle with a Restore button. Matches mobile app behaviour.
-- [x] **Team status display broken** — Fixed in `dashboard.tsx` via `fetchClockedInMembers()` which queries `time_entries WHERE clock_out IS NULL AND owner_id = user.id`, then filters by `location_id` when a specific location is selected. Polls every 30 seconds and passes result down as `clockedInMembers` prop.
+- [x] Page wipe on action — fixed via `useRef` for `selectedLocationId` in `dashboard.tsx`
+- [x] Archive feature missing from website — fixed in `DashboardWorkflows.tsx`
+- [x] Team status display broken — fixed via `fetchClockedInMembers()` in `dashboard.tsx`
+- [x] Cancel batch wipes workflow list — `fetchWorkflows` no longer filters by `location_id`
+- [x] Workflows not location-dependent — app filters by clock-in state; website filters at render time
+- [x] Clock-in state affects dashboard incorrectly — fixed in `WorkflowSelectScreen.tsx`
+- [x] Team directory missing background + back button — fixed in `directory.tsx`
+- [x] Cannot invite employees — Resend wired up in `api/directory/invite.ts`; `api/directory/index.ts` fixed to use `network_member_roles`
+- [x] Labour rates currency hardcoded — country/currency picker in `DashboardSettings.tsx`; `locations` table migration run
+- [x] Create Shift modal z-index — fixed independently
+- [x] Scrollbar on tab bar — `overflow-x-hidden` in `dashboard.tsx`
+- [x] Date field overflow on Analytics — fixed independently
+- [x] Cannot delete wasted batches — fixed independently
+- [x] Account/Settings/Directory pages missing background — `dashboard-bg` wrapper added
 
 ---
 
 ## 🟠 Pre-Launch — Core Features
 
 ### Account & Access
-- [x] **Account tiers** — Maintain two separate account pages (standard and premium). Standard users must not see premium/production tools — both to avoid overwhelm and to maintain value in the premium tier.
-- [ ] **New user tutorial** — Interactive onboarding walkthrough for first-time users (tooltips, guided steps, sample workflow).
+- [x] Account tiers — Standard vs premium gated correctly
+- [ ] **New user tutorial** — Interactive onboarding walkthrough (tooltips, guided steps, sample workflow)
 
 ### Employee & Location
-- [x] **Employee directory** — Active / On Leave / Terminated status on `network_member_roles` (not profiles). No photos. Employees can work at multiple businesses.
-- [x] **Employment status gate** — `canClockIn()` blocks terminated and on_leave employees at the API level.
-- [ ] **Location locking** — Employees can only clock in within ~100m of the registered business address.
-  - Food trucks: when start-of-day report is submitted, record a GPS ping; all staff must clock in within ~100m of that ping.
-  - Multiple trucks require separate licenses; no simultaneous sign-in across physically separate locations.
-  - Ghost kitchens running multiple brands from one address are fine on a single license (data will not be separated by brand).
-  - Implementation: capture `navigator.geolocation` on clock-in, compare against `locations.lat/lng` in `canClockIn()`.
+- [x] Employee directory — Active / On Leave / Terminated on `network_member_roles`
+- [x] Employment status gate — `canClockIn()` blocks terminated/on_leave
+- [ ] **Location locking** — Clock-in only within ~100m of registered address
+  - Food trucks: GPS ping on start-of-day; all staff clock in within ~100m of that ping
+  - Multiple trucks need separate licenses
+  - Implementation: `navigator.geolocation` on clock-in → compare against `locations.lat/lng`
 
 ### Workflows & Batches
-- [ ] **Workflow caching & public directory** — Cache AI-parsed workflow results to avoid duplicate parse costs. Build a browsable "Workflow Directory" for importing community workflows.
-  - Only scrape recipe ingredients and steps — no blog content (copyright risk).
-  - Enforce no blog post attachments.
-  - Parse workflows for equipment references (required vs. recommended).
-- [ ] **Barcode / QR printing (app)** — Print a QR code tied to an active batch (useful mid-fermentation etc.). Scanning the QR with the app:
-  - Imports the batch and opens it at the last completed step.
-  - Allows the scanning user to claim it.
-  - Printing the QR should release the workflow from any user who currently holds it.
+- [ ] **Drag-to-reorder workflows** — Both app and web dashboard
+- [ ] **Workflow caching & public directory** — Cache AI-parsed results; browsable community directory
+- [ ] **Barcode / QR printing (app)** — QR tied to active batch; scan imports at last step
+
+### Reports
+- [ ] **Reports page overhaul (app)**
+  - Rename "Environmental Report" → "Start of Day Report"
+  - Start of Day and End of Day on same tab
+  - Generate Report modal: no SoD today → create one; active workday → end day + EoD report
+  - Clicking existing report opens it for editing
+
+---
+
+## 🏗️ Inventory System — Major Upgrade
+
+### Overview
+Full rebuild of inventory to support invoice/packing slip scanning, supplier management, par levels, location transfers, and POS integration. Ties into predictive batch scheduling and Start of Day reports.
+
+---
+
+### Core Principles (from spec)
+- Inventory is **location-specific** — employees must be clocked in at a location to update it
+- **InventoryID** used for all items (ingredients, dry goods, packaging, etc.)
+- **System categories are locked**: Produce, Meat, Seafood, Dairy, Dry Goods, Liquor, Beer, Wine, Non-Alcoholic, Cleaning, Paper/Supplies, Other
+- Duplicate items: merge silently — admin can clean up later, no prompts to staff
+- Backorders: update only quantity received; low stock alerts stay active for unreceived items
+- Financials always returned; NULL if unavailable
+- All edits via dashboard update both inventory and analytics
+- Currency pulled from `locations.currency_symbol` / `locations.currency_code` — never hardcoded
+
+---
+
+### Phase 1 — Database Migration
+
+Run in Supabase SQL editor. Add to a new file `migration_inventory.sql`.
+
+```sql
+-- Suppliers
+create table if not exists suppliers (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users not null,
+  name text not null,
+  contact_name text,
+  phone text,
+  email text,
+  payment_terms text,
+  default_tax numeric,
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- Inventory items (owner-scoped, not location-scoped)
+-- Quantities are tracked per-location in location_inventory
+create table if not exists inventory_items (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users not null,
+  name text not null,
+  category text not null check (category in (
+    'Produce','Meat','Seafood','Dairy','Dry Goods',
+    'Liquor','Beer','Wine','Non-Alcoholic',
+    'Cleaning','Paper/Supplies','Other'
+  )),
+  size text,
+  unit text,
+  default_supplier_id uuid references suppliers(id),
+  par_level numeric,        -- minimum qty on hand; checked against location_inventory
+  par_reset_on_sod boolean default true,  -- reset check flag when SoD report generated
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- Per-location quantities
+create table if not exists location_inventory (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users not null,
+  location_id uuid references locations(id) not null,
+  inventory_item_id uuid references inventory_items(id) not null,
+  quantity numeric default 0,
+  last_updated_by uuid references auth.users,
+  updated_at timestamptz default now(),
+  unique(location_id, inventory_item_id)  -- upsert target
+);
+
+-- Invoices / packing slips
+create table if not exists invoices (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users not null,
+  location_id uuid references locations(id),
+  supplier_id uuid references suppliers(id),
+  created_by uuid references auth.users,   -- employee who scanned
+  invoice_number text,
+  invoice_date date,
+  status text default 'unpaid' check (status in ('paid','unpaid')),
+  subtotal numeric,
+  tax numeric,
+  fees numeric,
+  discounts numeric,
+  total numeric,
+  raw_ocr_text text,    -- store raw scan output for debugging
+  image_url text,       -- Supabase Storage: bucket 'order-scans'
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- Invoice line items
+create table if not exists invoice_line_items (
+  id uuid primary key default gen_random_uuid(),
+  invoice_id uuid references invoices(id) on delete cascade,
+  inventory_item_id uuid references inventory_items(id),
+  name text not null,
+  size text,
+  quantity numeric,
+  unit text,
+  unit_price numeric,
+  extended_price numeric,
+  category text,
+  received boolean default true,   -- false = backordered; qty still updated for what was received
+  created_at timestamptz default now()
+);
+
+-- Location-to-location inventory transfers
+create table if not exists inventory_transfers (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users not null,
+  from_location_id uuid references locations(id),
+  to_location_id uuid references locations(id),
+  inventory_item_id uuid references inventory_items(id),
+  quantity numeric,
+  transferred_by uuid references auth.users,
+  notes text,
+  created_at timestamptz default now()
+);
+
+-- RLS
+alter table suppliers enable row level security;
+alter table inventory_items enable row level security;
+alter table location_inventory enable row level security;
+alter table invoices enable row level security;
+alter table invoice_line_items enable row level security;
+alter table inventory_transfers enable row level security;
+
+-- Owner access policies (add employee policies once clock-in gate is confirmed working)
+create policy "owners_suppliers" on suppliers for all using (owner_id = auth.uid());
+create policy "owners_inventory_items" on inventory_items for all using (owner_id = auth.uid());
+create policy "owners_location_inventory" on location_inventory for all using (owner_id = auth.uid());
+create policy "owners_invoices" on invoices for all using (owner_id = auth.uid());
+create policy "owners_invoice_line_items" on invoice_line_items
+  for all using (invoice_id in (select id from invoices where owner_id = auth.uid()));
+create policy "owners_inventory_transfers" on inventory_transfers for all using (owner_id = auth.uid());
+```
+
+**Supabase Storage:**
+- Create bucket `order-scans`
+- RLS: authenticated users can upload to `{user_id}/*`; only owner can read
+
+---
+
+### Phase 2 — Invoice / Packing Slip Scanner (App)
+
+**Files to create/modify:**
+- `screens/InventoryScreen.tsx` — add "Scan Invoice" button (visible only when clocked in)
+- `screens/InvoiceReviewScreen.tsx` — new screen for reviewing parsed results
+- `lib/invoiceParser.ts` — Claude API call + response handler
+- `api/inventory/invoice.ts` — saves invoice + line items, updates `location_inventory`
+
+**App flow:**
+1. Employee taps "Scan Invoice" (must be clocked in — check `time_entries` for active entry)
+2. Camera opens → photo taken → uploaded to Supabase Storage `order-scans/{user_id}/{timestamp}.jpg`
+3. Image URL + raw OCR text sent to `invoiceParser.ts`
+4. `invoiceParser.ts` calls Claude API with the system prompt below
+5. Parsed JSON displayed in `InvoiceReviewScreen.tsx`
+6. Employee edits any incorrect fields (name, qty, category, unit price)
+7. Items with no `inventoryId` match shown with "New Item" badge — auto-created on confirm
+8. If unit size missing for any item → modal asks before saving (one item at a time)
+9. On confirm: POST to `api/inventory/invoice.ts` → saves invoice, upserts `location_inventory`
+
+**Claude parsing prompt (finalised — do not change without testing):**
+
+```
+System:
+You are a parsing assistant for Batch Maker, a restaurant/kitchen inventory system.
+Parse raw OCR text from packing slips or invoices and return strict JSON only.
+
+Rules:
+1. Only parse lines containing actual products or ingredients.
+   Ignore phone numbers, addresses, legal disclaimers, and notes.
+2. For each line item return:
+   name, size, quantity, unit (CS/EA/LB/KG/BT etc.),
+   unitPrice, extendedPrice, category, inventoryId (always null — system assigns later)
+3. Financial totals: subtotal, tax, fees, discounts, total. Return NULL if missing.
+4. Categories (locked — pick closest match):
+   Produce, Meat, Seafood, Dairy, Dry Goods, Liquor, Beer, Wine,
+   Non-Alcoholic, Cleaning, Paper/Supplies, Other
+5. Backordered items: set quantity to amount received only.
+6. Output strict JSON only — no commentary, markdown, or explanation.
+```
+
+**Expected JSON shape** (matches `invoice_line_items` columns):
+```json
+{
+  "supplier": "Sysco",
+  "invoiceDate": "2026-02-26",
+  "items": [
+    {
+      "name": "Roma Tomatoes",
+      "size": "25lb",
+      "quantity": 2,
+      "unit": "CS",
+      "unitPrice": 45.00,
+      "extendedPrice": 90.00,
+      "category": "Produce",
+      "inventoryId": null
+    }
+  ],
+  "financials": {
+    "subtotal": 388.00,
+    "tax": 33.00,
+    "fees": 10.00,
+    "discounts": null,
+    "total": 431.00
+  }
+}
+```
+
+**Important implementation notes:**
+- Invoice parser and recipe parser are **completely separate** — different prompts, different files, different API calls
+- Use `model: "claude-sonnet-4-6"` (same as recipe parser)
+- Upsert `location_inventory` on `(location_id, inventory_item_id)` — never insert duplicates
+- If `inventoryId` is null after parsing, create new `inventory_items` row and use its ID
+- Employee clock-in enforced at API level: check `time_entries` for active row matching `location_id`
+
+---
+
+### Phase 3 — Supplier Management (Website Dashboard)
+
+**Files to create/modify:**
+- `components/DashboardInventory.tsx` — new component, added as tab in `dashboard.tsx`
+- Tab structure: **Items | Invoices | Suppliers | Transfers**
+
+**Suppliers tab features:**
+- List all suppliers: name, contact, phone, email, payment terms
+- Add / edit / delete supplier
+- Click supplier → invoice history for that supplier
+  - Sortable columns: Date, Invoice #, Subtotal, Tax, Fees, Discounts, Total, Status
+  - Filter by: date range, category, paid/unpaid
+  - Mark invoice as paid button
+  - Total spend summary at top
+
+**Items tab features:**
+- Full inventory list with search + filter by category, location, low stock
+- Edit item: name, category, size, unit, par level, default supplier
+- Merge duplicates: admin selects two items → merge into one (quantities summed, history preserved)
+- Low stock indicator: red badge when `location_inventory.quantity < inventory_items.par_level`
+
+**Invoices tab features:**
+- All invoices across all suppliers
+- Filter by: date range, supplier, location, status
+- Click to expand line items
+- Mark as paid
+
+**Transfers tab features:**
+- Log a transfer: select from-location, to-location, item, quantity
+- History of all transfers with date, item, qty, who transferred
+
+---
+
+### Phase 4 — Par Levels & Start of Day Integration
+
+**Par level logic:**
+- `par_level` on `inventory_items` — set by owner/manager via Items tab
+- Low stock alert: `location_inventory.quantity < inventory_items.par_level`
+- Alert surfaces: dashboard overview card, Inventory tab badge, Start of Day report
+
+**Start of Day report changes (`reports` table, `type: 'daily'`):**
+- Report `data` JSONB now includes inventory snapshot: `{ items: [{ name, quantity, par_level, below_par }] }`
+- Items below par highlighted in report view
+- "Add to shopping list" button per flagged item (saves to a `shopping_list` array in report data)
+- Par level "checked" flag resets on SoD generation: `par_reset_on_sod = true` items get a `last_checked_at` timestamp
+
+**App changes needed:**
+- `StartOfDayReportScreen.tsx` — add inventory section showing par level status
+- `ReportsScreen.tsx` — already being overhauled (see Reports overhaul task above); inventory section added there
+
+---
+
+### Phase 5 — Dashboard Analytics (Website)
+
+**Add to `DashboardAnalytics.tsx`:**
+- New "Inventory" tab alongside existing Batch Reports
+- Line chart: price per item over time (flag price increases in red)
+- Bar/pie chart: spend by category
+- Bar chart: spend by supplier
+- Date range filter (matches existing analytics date filter pattern)
+- Export to CSV button (same pattern as existing CSV export)
+
+---
+
+### Phase 6 — POS Integration (Post-Launch)
+
+**Purpose:** Pull sales data to feed predictive batch scheduling
+
+**Supported platforms (in order of priority):**
+1. Square (most common in food service)
+2. Toast
+3. Lightspeed
+4. Clover
+
+**Data pulled:** daily sales by item, covers, revenue totals
+
+**Used for:**
+- Suggesting batch quantities based on recent sales trends + par levels
+- Calendar alerts for time-sensitive prep (e.g. needs cold ferment 24hrs before peak day)
+- Feeding `predictive_schedule` suggestions into `DashboardCalendar.tsx`
+
+**Implementation approach:**
+- OAuth flow per POS platform (each has different OAuth scopes)
+- Daily sync via Supabase Edge Function (cron trigger)
+- Sync results stored in new `pos_sales` table: `(owner_id, location_id, item_name, date, quantity_sold, revenue)`
+- Predictive logic: rolling 4-week average sales × par level buffer = suggested batch qty
 
 ---
 
 ## ✅ Completed
 
 ### DashboardAnalytics.tsx
-- [x] Batch Reports Viewer section added below existing analytics — filterable list of all batch records, expandable detail rows (ingredients, waste details, notes), live summary bar (count, total cost, avg duration, waste count), CSV export of currently filtered results.
+- [x] Batch Reports Viewer — filterable list, expandable rows, live summary bar, CSV export
 
 ### DashboardWorkflows.tsx
-- [x] Workflow archive/unarchive — Archive button on active workflows, collapsible "Show archived" section with Restore button. Uses `archived_at` timestamp on `workflows`. Mirrors mobile app behaviour.
+- [x] Workflow archive/unarchive
 - [x] Toast notifications replacing `alert()` calls
-- [x] Active sessions derived from props (zero extra DB calls in component)
-- [x] Team Status card driven by `clockedInMembers` prop (clock-in based, not heartbeat-based)
+- [x] Team Status card driven by `clockedInMembers` prop
 
 ### DashboardCalendar.tsx
-- [x] Force Delete stuck `in_progress` batches (cleans orphaned `batches` rows)
-- [x] Mark Done on `in_progress` batches
-- [x] Hard Delete on all statuses
-- [x] Copy Batch — duplicate to any date
-- [x] Repeat Batch — recurring weekly modal, skips duplicates
+- [x] Force Delete stuck `in_progress` batches
+- [x] Mark Done, Hard Delete, Copy Batch, Repeat Batch (recurring weekly)
 
 ### DashboardSchedule.tsx
-- [x] Multi-employee shift creation
-- [x] Shift types: Scheduled / Holiday / Sick Day with colour coding
-- [x] Hard delete shifts
-- [x] Copy shift to another date, re-assignable to different employee
-- [x] Repeat shift — weekly recurring modal with multi-employee support
-- [x] Tab bar: Calendar | All Shifts | Labour Report
-- [x] Labour Report tab — monthly hours/holiday/sick table per employee
-- [x] Save week as reusable schedule template ("Week A", "Week B") — stored in `schedule_templates` table
-- [x] Apply saved template to a target week in one click — offsets shifts to correct days from chosen Monday
-- [x] Bulk delete shifts by employee, status, and/or date range
-- [x] Export schedule to printable weekly view — generates HTML, opens in new tab with print button
-- [x] Hourly rate field per employee — stored on `network_member_roles.hourly_rate`, inline editable in Labour Report tab
-- [x] Labour cost report — actual hours × rate per employee, total footer, summary card
-- [x] Holiday allowance tracker — annual entitlement per employee (`network_member_roles.holiday_allowance`, default 28 days), inline editable, shows days used this month
+- [x] Multi-employee shift creation, shift types (Scheduled/Holiday/Sick)
+- [x] Labour Report, schedule templates, bulk delete, printable export
+- [x] Hourly rate, holiday allowance, labour cost report
+- [x] Holiday request workflow — submit in app, approve/decline on website, push notifications
 
-### Employee Directory (pages/directory.tsx)
-- [x] No photo storage — initials avatar only
-- [x] Status: `active` / `on_leave` / `terminated` on `network_member_roles` (not `profiles`)
-- [x] Terminated employees keep their account and can join other businesses
-- [x] Edit modal: job title, phone, hire date, role, location restrictions, access toggles
-- [x] Location assignment — restrict employee to specific locations or allow all
-- [x] Status change modal with required termination reason / optional leave reason
-- [x] Invite modal (first/last name, job title, phone, role)
-- [x] Cancel pending invitations
-- [x] CSV export (client-side)
-- [x] Filter: All / Active / On Leave / Terminated + search
-- [x] Remove member (relationship only, does not delete account)
+### Employee Directory
+- [x] Status: active / on_leave / terminated on `network_member_roles`
+- [x] Edit modal, location assignment, status change modal, invite modal, CSV export
 
 ### Backend / API
-- [x] `api/directory/status.ts` — replaces `blacklist.ts`, uses `getSupabaseClient()` pattern
-- [x] `canClockIn()` — blocks terminated/on_leave; holiday/sick shifts excluded from shift match
-- [x] `timeEntries.ts` — fixed `req.params` → `req.query.id`; `total_hours` calculated on clock-out and edit; `.single()` → `.maybeSingle()` on empty-safe queries
-- [x] `pages/api/time-entries/[id].ts` — new dynamic route for edit/delete
-- [x] `lib/supabase.ts` — updated `Profile` type; added `getSupabaseAdmin()`; added `isPremiumProfile()` helper
-- [x] `dashboard.tsx` — page wipe bug fixed with `useRef`; `fetchClockedInMembers()` with 30s polling; `clockedInMembers` passed in `sharedProps`
-- [x] SQL migration: `migration_employee_directory.sql`
-- [x] SQL migration: `migration_schedule_features.sql` — adds `hourly_rate` + `holiday_allowance` to `network_member_roles`; creates `schedule_templates` table with RLS
+- [x] `api/directory/invite.ts` — Resend wired up, hardened errors, duplicate check
+- [x] `api/directory/index.ts` — uses `network_member_roles` not `team_members`
+- [x] `api/directory/status.ts`, `canClockIn()`, `timeEntries.ts`
+- [x] SQL migrations: employee_directory, schedule_features, holiday_requests, currency
 
 ---
 
 ## 🔲 Labour Reports — Remaining
-- [ ] Attach labour summary to end-of-day batch completion report
-- [ ] Server-side CSV export with complete labour data
-
----
+- [ ] Labour report reads `currency_symbol` from location (not hardcoded)
+- [ ] Attach labour summary to end-of-day report
+- [ ] Server-side CSV export
 
 ## 🔲 Holiday & Absence — Remaining
-- [x] Approval workflow for holiday requests (employee requests → owner approves/declines)
 - [ ] Absence calendar overlay across entire team
 
 ---
 
 ## 🟡 Post-Launch — Growth Features
-- [ ] **POS integration** — Square, Toast, Lightspeed, Clover etc. Pull in sales data for costing and revenue analytics. Export to CSV/XLSX.
-- [ ] **Language packs** — Downloadable UI translations for multilingual teams.
-- [ ] **QuickBooks integration** — Sync cost tracking and financial data.
-- [ ] **Google Calendar sync** — View and schedule batches from Google Calendar.
-
----
+- [ ] POS integration (see Inventory Phase 6)
+- [ ] Predictive batch scheduling (requires POS + par levels)
+- [ ] Web embed tool
+- [ ] Language packs
+- [ ] QuickBooks integration
+- [ ] Google Calendar sync
 
 ## 🔵 Future / Enterprise
-- [ ] **Predictive batch scheduling** — Use POS + pre-order data to suggest production increases; calendar alerts for time-sensitive prep (e.g. day-before cold ferment). Requires POS integration.
-- [ ] **Customer order tracking**
-- [ ] **Equipment maintenance logs**
-- [ ] **Role-based permissions** — Manager / Supervisor / Operator levels
-
-
----
+- [ ] Customer order tracking
+- [ ] Equipment maintenance logs
+- [ ] Role-based permissions (Manager / Supervisor / Operator)
 
 ## 🔲 iOS & Play Store Launch
-- [ ] App Store + Play Store listings (metadata, screenshots, description)
-- [ ] Privacy policy page (required by both stores)
-- [ ] Terms of service page
+- [ ] App Store + Play Store listings
+- [ ] Privacy policy + Terms of service pages
 - [ ] App icon all sizes + splash screen
 - [ ] TestFlight beta + Play internal test track
-- [ ] IAP products configured in App Store Connect + Play Console
-- [ ] Push notifications (Expo/FCM) for shift reminders and batch alerts
+- [ ] IAP products in App Store Connect + Play Console
+- [ ] Push notifications (Expo/FCM)
+- [ ] Stripe webhooks hardened for mobile IAP
 
 ---
 
 ## 🗒️ Architecture Notes
-- `employment_status` lives on `network_member_roles` (the relationship), NOT `profiles`. Terminating an employee at your business never touches their Supabase auth account — they can still use the app and join other businesses.
-- `location_ids` array on `network_member_roles`: `null`/empty = access to all locations.
-- `hourly_rate` and `holiday_allowance` also on `network_member_roles` — owner sets these per employee, not global.
-- `schedule_templates` stores shifts as a JSONB array of `{ day_of_week, assigned_to, start_time, end_time, role, ... }`. Applied templates offset each shift from the chosen Monday by `day_of_week`.
-- `isPremiumProfile()` in `lib/supabase.ts` is the single source of truth for tier checks — handles `role`, `subscription_status`, and trial expiry.
-- All dashboard fetch functions read `locationRef.current` (a `useRef`) rather than the `selectedLocationId` state variable. This prevents stale closure bugs where child component callbacks would see the initial `'all'` value.
-- `team_members` table may still exist from an old directory API iteration. New system uses `network_member_roles` exclusively.
-- `clockedInMembers` is fetched by `dashboard.tsx` and passed down as a prop — components never query `time_entries` directly.
+- `employment_status` on `network_member_roles` — NOT `profiles`
+- `location_ids` on `network_member_roles`: null/empty = all locations
+- `hourly_rate` and `holiday_allowance` on `network_member_roles`
+- `isPremiumProfile()` in `lib/supabase.ts` — single source of truth for tier checks
+- All dashboard fetches use `locationRef.current` (useRef) to avoid stale closures
+- `team_members` table is legacy — ignore it, use `network_member_roles` exclusively
+- `clockedInMembers` fetched in `dashboard.tsx`, passed as prop — components never query `time_entries` directly
+- Daily reports → `reports` table, `type: 'daily'`, full data in `data` JSONB column
+- Currency from `locations.currency_symbol` / `locations.currency_code` — never hardcoded
+- Workflows are user-scoped — `fetchWorkflows` never filters by location; display filtering at render time only
+- `inventory_items` are owner-scoped; quantities per-location in `location_inventory`
+- Upsert `location_inventory` on unique `(location_id, inventory_item_id)`
+- Invoice images in Supabase Storage bucket `order-scans`, RLS: owner reads/writes own files
+- Invoice parser and recipe parser are completely separate Claude API calls — different prompts, different files
