@@ -41,362 +41,136 @@ _Last updated: 2026-02-26_
 - [ ] **Workflow caching & public directory** — Cache AI-parsed results; browsable community directory
 - [ ] **Barcode / QR printing (app)** — QR tied to active batch; scan imports at last step
 
-### Reports
-- [ ] **Reports page overhaul (app)**
-  - Rename "Environmental Report" → "Start of Day Report"
-  - Start of Day and End of Day on same tab
-  - Generate Report modal: no SoD today → create one; active workday → end day + EoD report
-  - Clicking existing report opens it for editing
+### Reports — App Overhaul ✅
+- [x] **`ReportsScreen.tsx` fully rewritten**
+  - Tabs reduced to 2: **📅 Day Reports** + **🧺 Batches**
+  - "Environmental Report" renamed to **Start of Day** everywhere
+  - SoD and EoD reports live on the same Day Reports tab
+  - Today summary card shows SoD / EoD / batch count at a glance
+  - `+ Report` button opens a smart bottom-sheet modal
+    - Detects if SoD done today → shows "Needed" badge if not
+    - Detects active workday → shows "Open" badge on EoD option
+  - Every report card taps open a full-screen detail modal
+  - SoD detail: temp, humidity, equipment temps, notes + Edit button
+  - EoD detail: batch breakdown, workflow summary, editable notes
+  - Batch detail: all fields, waste info with red banner, waste notes
+  - Delete from all detail views
+- [x] **`EnvironmentalReportScreen.tsx` overhauled**
+  - Renamed to "Start of Day Report" throughout UI
+  - Accepts `editId` param — pre-fills all fields for editing existing reports
+  - Added 4 equipment temp fields: Fridge, Freezer, Proof Box, Oven (2-column grid layout)
+  - "Update Report" / "Save Report" modes; loading spinner in edit mode
+- [x] **`reports.ts` service updated**
+  - `createEnvironmentalReport` — new `extras` param for equipment temps; syncs all new columns
+  - `updateEnvironmentalReport(id, updates)` — new function; updates local + Supabase
+  - `updateDailyReport(id, updates)` — new function; updates notes; syncs to `reports.data` JSONB
+  - `generateDailyReport` — now fetches inventory par snapshot (Phase 4 integration)
+  - `DailyReport` type — new `inventorySnapshot?: InventoryParSnapshot` field
+  - SoD CSV export includes all equipment temp columns
+  - EoD CSV export includes "Below Par Items" count column
+  - **DB migration required:**
+    ```sql
+    ALTER TABLE environmental_reports
+      ADD COLUMN IF NOT EXISTS fridge_temp numeric,
+      ADD COLUMN IF NOT EXISTS freezer_temp numeric,
+      ADD COLUMN IF NOT EXISTS proof_temp numeric,
+      ADD COLUMN IF NOT EXISTS oven_temp numeric;
+    ```
 
 ---
 
 ## 🏗️ Inventory System — Major Upgrade
 
-### Overview
-Full rebuild of inventory to support invoice/packing slip scanning, supplier management, par levels, location transfers, and POS integration. Ties into predictive batch scheduling and Start of Day reports.
-
----
-
-### Core Principles (from spec)
+### Core Principles
 - Inventory is **location-specific** — employees must be clocked in at a location to update it
-- **InventoryID** used for all items (ingredients, dry goods, packaging, etc.)
 - **System categories are locked**: Produce, Meat, Seafood, Dairy, Dry Goods, Liquor, Beer, Wine, Non-Alcoholic, Cleaning, Paper/Supplies, Other
-- Duplicate items: merge silently — admin can clean up later, no prompts to staff
+- Duplicate items: merge silently — admin cleans up later
 - Backorders: update only quantity received; low stock alerts stay active for unreceived items
-- Financials always returned; NULL if unavailable
-- All edits via dashboard update both inventory and analytics
-- Currency pulled from `locations.currency_symbol` / `locations.currency_code` — never hardcoded
+- Currency from `locations.currency_symbol` — never hardcoded
 
 ---
 
-### Phase 1 — Database Migration
+### Phase 1 — Database Migration ✅
+- [x] `suppliers` table — name, contact, phone, email, payment_terms, default_tax
+- [x] `inventory_items` table — owner-scoped; locked category CHECK; par_level, par_reset_on_sod
+- [x] `location_inventory` table — per-location quantities; unique on `(location_id, inventory_item_id)`
+- [x] `invoices` table — supplier_id, invoice_number, date, status (paid/unpaid), financials, raw_ocr_text
+- [x] `invoice_line_items` table — invoice_id, inventory_item_id, name, size, qty, unit_price, extended_price, received (backorder flag)
+- [x] `inventory_transfers` table — from/to location, item, quantity, transferred_by
+- [x] RLS policies — owner-only access on all new tables
+- [x] Supabase Storage bucket `order-scans` — RLS: owner reads/writes own files
 
-Run in Supabase SQL editor. Add to a new file `migration_inventory.sql`.
+### Phase 2 — Invoice / Packing Slip Scanner (App) ✅
+- [x] `OrderScannerScreen.tsx` — camera UI, base64 image capture, clock-in gate enforced
+  - Import path: `../../lib/supabase`; uses direct `supabase` import (AsyncStorage pattern)
+- [x] `api/inventory/scan-order.ts` — Next.js API endpoint
+  - Auth via `getUserFromRequest`; clock-in check via `time_entries`
+  - Google Vision OCR → Claude Sonnet parses → locked category list
+  - Returns `{ success, rawText, parsed }` to app
+  - Env vars: `ANTHROPIC_API_KEY`, `GOOGLE_VISION_API_KEY`
 
-```sql
--- Suppliers
-create table if not exists suppliers (
-  id uuid primary key default gen_random_uuid(),
-  owner_id uuid references auth.users not null,
-  name text not null,
-  contact_name text,
-  phone text,
-  email text,
-  payment_terms text,
-  default_tax numeric,
-  notes text,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
-);
+### Phase 3 — Supplier Management (Website Dashboard) ✅
+- [x] `DashboardInventory.tsx` — complete new component, 4-tab interface
+  - **📦 Items** — inventory list, qty vs par_level, low stock badges, add/edit/delete, category filter
+  - **🧾 Invoices** — all invoices across suppliers, expandable line items, backorder indicators, mark paid/unpaid, summary cards
+  - **🏭 Suppliers** — list → detail view, invoice history, total spend, unpaid balance, add/edit/delete
+  - **🔄 Transfers** — log location-to-location transfers, view transfer history
+  - Currency always from `locations.currency_symbol`; toast notifications throughout
 
--- Inventory items (owner-scoped, not location-scoped)
--- Quantities are tracked per-location in location_inventory
-create table if not exists inventory_items (
-  id uuid primary key default gen_random_uuid(),
-  owner_id uuid references auth.users not null,
-  name text not null,
-  category text not null check (category in (
-    'Produce','Meat','Seafood','Dairy','Dry Goods',
-    'Liquor','Beer','Wine','Non-Alcoholic',
-    'Cleaning','Paper/Supplies','Other'
-  )),
-  size text,
-  unit text,
-  default_supplier_id uuid references suppliers(id),
-  par_level numeric,        -- minimum qty on hand; checked against location_inventory
-  par_reset_on_sod boolean default true,  -- reset check flag when SoD report generated
-  notes text,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
-);
+### Phase 4 — Par Levels & Start of Day Integration ✅ (partial)
+- [x] `fetchInventoryParSnapshot()` in `reports.ts` — queries `inventory_items` + `location_inventory`
+- [x] `InventoryParSnapshot` / `InventoryParItem` types exported from `reports.ts`
+- [x] `generateDailyReport()` — attaches `inventorySnapshot` to EoD report; below-par items sorted first
+- [x] EoD detail modal in `ReportsScreen.tsx` — inventory snapshot section in report view
+- [ ] `StartOfDayReportScreen.tsx` — add inventory section; "Add to order list" button per flagged item
+- [ ] `DashboardOverview.tsx` — low stock alert card using `location_inventory` + `par_level`
+- [ ] Stamp `last_checked_at` on `par_reset_on_sod = true` items when SoD generated
 
--- Per-location quantities
-create table if not exists location_inventory (
-  id uuid primary key default gen_random_uuid(),
-  owner_id uuid references auth.users not null,
-  location_id uuid references locations(id) not null,
-  inventory_item_id uuid references inventory_items(id) not null,
-  quantity numeric default 0,
-  last_updated_by uuid references auth.users,
-  updated_at timestamptz default now(),
-  unique(location_id, inventory_item_id)  -- upsert target
-);
+### Phase 5 — Dashboard Analytics — Inventory 🔲
+- [ ] New "Inventory" tab in `DashboardAnalytics.tsx`
+- [ ] Line chart: price per item over time (flag increases in red)
+- [ ] Bar/pie chart: spend by category; bar chart: spend by supplier
+- [ ] Date range filter + CSV export
 
--- Invoices / packing slips
-create table if not exists invoices (
-  id uuid primary key default gen_random_uuid(),
-  owner_id uuid references auth.users not null,
-  location_id uuid references locations(id),
-  supplier_id uuid references suppliers(id),
-  created_by uuid references auth.users,   -- employee who scanned
-  invoice_number text,
-  invoice_date date,
-  status text default 'unpaid' check (status in ('paid','unpaid')),
-  subtotal numeric,
-  tax numeric,
-  fees numeric,
-  discounts numeric,
-  total numeric,
-  raw_ocr_text text,    -- store raw scan output for debugging
-  image_url text,       -- Supabase Storage: bucket 'order-scans'
-  notes text,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
-);
-
--- Invoice line items
-create table if not exists invoice_line_items (
-  id uuid primary key default gen_random_uuid(),
-  invoice_id uuid references invoices(id) on delete cascade,
-  inventory_item_id uuid references inventory_items(id),
-  name text not null,
-  size text,
-  quantity numeric,
-  unit text,
-  unit_price numeric,
-  extended_price numeric,
-  category text,
-  received boolean default true,   -- false = backordered; qty still updated for what was received
-  created_at timestamptz default now()
-);
-
--- Location-to-location inventory transfers
-create table if not exists inventory_transfers (
-  id uuid primary key default gen_random_uuid(),
-  owner_id uuid references auth.users not null,
-  from_location_id uuid references locations(id),
-  to_location_id uuid references locations(id),
-  inventory_item_id uuid references inventory_items(id),
-  quantity numeric,
-  transferred_by uuid references auth.users,
-  notes text,
-  created_at timestamptz default now()
-);
-
--- RLS
-alter table suppliers enable row level security;
-alter table inventory_items enable row level security;
-alter table location_inventory enable row level security;
-alter table invoices enable row level security;
-alter table invoice_line_items enable row level security;
-alter table inventory_transfers enable row level security;
-
--- Owner access policies (add employee policies once clock-in gate is confirmed working)
-create policy "owners_suppliers" on suppliers for all using (owner_id = auth.uid());
-create policy "owners_inventory_items" on inventory_items for all using (owner_id = auth.uid());
-create policy "owners_location_inventory" on location_inventory for all using (owner_id = auth.uid());
-create policy "owners_invoices" on invoices for all using (owner_id = auth.uid());
-create policy "owners_invoice_line_items" on invoice_line_items
-  for all using (invoice_id in (select id from invoices where owner_id = auth.uid()));
-create policy "owners_inventory_transfers" on inventory_transfers for all using (owner_id = auth.uid());
-```
-
-**Supabase Storage:**
-- Create bucket `order-scans`
-- RLS: authenticated users can upload to `{user_id}/*`; only owner can read
+### Phase 6 — POS Integration (Post-Launch) 🔲
+- [ ] Square OAuth + daily sync (priority 1)
+- [ ] Toast, Lightspeed, Clover
+- [ ] `pos_sales` table: `(owner_id, location_id, item_name, date, quantity_sold, revenue)`
+- [ ] Predictive scheduling: rolling 4-week average × par buffer → suggested batch qty
+- [ ] Feed suggestions into `DashboardCalendar.tsx`
 
 ---
 
-### Phase 2 — Invoice / Packing Slip Scanner (App)
-
-**Files to create/modify:**
-- `screens/InventoryScreen.tsx` — add "Scan Invoice" button (visible only when clocked in)
-- `screens/InvoiceReviewScreen.tsx` — new screen for reviewing parsed results
-- `lib/invoiceParser.ts` — Claude API call + response handler
-- `api/inventory/invoice.ts` — saves invoice + line items, updates `location_inventory`
-
-**App flow:**
-1. Employee taps "Scan Invoice" (must be clocked in — check `time_entries` for active entry)
-2. Camera opens → photo taken → uploaded to Supabase Storage `order-scans/{user_id}/{timestamp}.jpg`
-3. Image URL + raw OCR text sent to `invoiceParser.ts`
-4. `invoiceParser.ts` calls Claude API with the system prompt below
-5. Parsed JSON displayed in `InvoiceReviewScreen.tsx`
-6. Employee edits any incorrect fields (name, qty, category, unit price)
-7. Items with no `inventoryId` match shown with "New Item" badge — auto-created on confirm
-8. If unit size missing for any item → modal asks before saving (one item at a time)
-9. On confirm: POST to `api/inventory/invoice.ts` → saves invoice, upserts `location_inventory`
-
-**Claude parsing prompt (finalised — do not change without testing):**
-
-```
-System:
-You are a parsing assistant for Batch Maker, a restaurant/kitchen inventory system.
-Parse raw OCR text from packing slips or invoices and return strict JSON only.
-
-Rules:
-1. Only parse lines containing actual products or ingredients.
-   Ignore phone numbers, addresses, legal disclaimers, and notes.
-2. For each line item return:
-   name, size, quantity, unit (CS/EA/LB/KG/BT etc.),
-   unitPrice, extendedPrice, category, inventoryId (always null — system assigns later)
-3. Financial totals: subtotal, tax, fees, discounts, total. Return NULL if missing.
-4. Categories (locked — pick closest match):
-   Produce, Meat, Seafood, Dairy, Dry Goods, Liquor, Beer, Wine,
-   Non-Alcoholic, Cleaning, Paper/Supplies, Other
-5. Backordered items: set quantity to amount received only.
-6. Output strict JSON only — no commentary, markdown, or explanation.
-```
-
-**Expected JSON shape** (matches `invoice_line_items` columns):
-```json
-{
-  "supplier": "Sysco",
-  "invoiceDate": "2026-02-26",
-  "items": [
-    {
-      "name": "Roma Tomatoes",
-      "size": "25lb",
-      "quantity": 2,
-      "unit": "CS",
-      "unitPrice": 45.00,
-      "extendedPrice": 90.00,
-      "category": "Produce",
-      "inventoryId": null
-    }
-  ],
-  "financials": {
-    "subtotal": 388.00,
-    "tax": 33.00,
-    "fees": 10.00,
-    "discounts": null,
-    "total": 431.00
-  }
-}
-```
-
-**Important implementation notes:**
-- Invoice parser and recipe parser are **completely separate** — different prompts, different files, different API calls
-- Use `model: "claude-sonnet-4-6"` (same as recipe parser)
-- Upsert `location_inventory` on `(location_id, inventory_item_id)` — never insert duplicates
-- If `inventoryId` is null after parsing, create new `inventory_items` row and use its ID
-- Employee clock-in enforced at API level: check `time_entries` for active row matching `location_id`
-
----
-
-### Phase 3 — Supplier Management (Website Dashboard)
-
-**Files to create/modify:**
-- `components/DashboardInventory.tsx` — new component, added as tab in `dashboard.tsx`
-- Tab structure: **Items | Invoices | Suppliers | Transfers**
-
-**Suppliers tab features:**
-- List all suppliers: name, contact, phone, email, payment terms
-- Add / edit / delete supplier
-- Click supplier → invoice history for that supplier
-  - Sortable columns: Date, Invoice #, Subtotal, Tax, Fees, Discounts, Total, Status
-  - Filter by: date range, category, paid/unpaid
-  - Mark invoice as paid button
-  - Total spend summary at top
-
-**Items tab features:**
-- Full inventory list with search + filter by category, location, low stock
-- Edit item: name, category, size, unit, par level, default supplier
-- Merge duplicates: admin selects two items → merge into one (quantities summed, history preserved)
-- Low stock indicator: red badge when `location_inventory.quantity < inventory_items.par_level`
-
-**Invoices tab features:**
-- All invoices across all suppliers
-- Filter by: date range, supplier, location, status
-- Click to expand line items
-- Mark as paid
-
-**Transfers tab features:**
-- Log a transfer: select from-location, to-location, item, quantity
-- History of all transfers with date, item, qty, who transferred
-
----
-
-### Phase 4 — Par Levels & Start of Day Integration
-
-**Par level logic:**
-- `par_level` on `inventory_items` — set by owner/manager via Items tab
-- Low stock alert: `location_inventory.quantity < inventory_items.par_level`
-- Alert surfaces: dashboard overview card, Inventory tab badge, Start of Day report
-
-**Start of Day report changes (`reports` table, `type: 'daily'`):**
-- Report `data` JSONB now includes inventory snapshot: `{ items: [{ name, quantity, par_level, below_par }] }`
-- Items below par highlighted in report view
-- "Add to shopping list" button per flagged item (saves to a `shopping_list` array in report data)
-- Par level "checked" flag resets on SoD generation: `par_reset_on_sod = true` items get a `last_checked_at` timestamp
-
-**App changes needed:**
-- `StartOfDayReportScreen.tsx` — add inventory section showing par level status
-- `ReportsScreen.tsx` — already being overhauled (see Reports overhaul task above); inventory section added there
-
----
-
-### Phase 5 — Dashboard Analytics (Website)
-
-**Add to `DashboardAnalytics.tsx`:**
-- New "Inventory" tab alongside existing Batch Reports
-- Line chart: price per item over time (flag price increases in red)
-- Bar/pie chart: spend by category
-- Bar chart: spend by supplier
-- Date range filter (matches existing analytics date filter pattern)
-- Export to CSV button (same pattern as existing CSV export)
-
----
-
-### Phase 6 — POS Integration (Post-Launch)
-
-**Purpose:** Pull sales data to feed predictive batch scheduling
-
-**Supported platforms (in order of priority):**
-1. Square (most common in food service)
-2. Toast
-3. Lightspeed
-4. Clover
-
-**Data pulled:** daily sales by item, covers, revenue totals
-
-**Used for:**
-- Suggesting batch quantities based on recent sales trends + par levels
-- Calendar alerts for time-sensitive prep (e.g. needs cold ferment 24hrs before peak day)
-- Feeding `predictive_schedule` suggestions into `DashboardCalendar.tsx`
-
-**Implementation approach:**
-- OAuth flow per POS platform (each has different OAuth scopes)
-- Daily sync via Supabase Edge Function (cron trigger)
-- Sync results stored in new `pos_sales` table: `(owner_id, location_id, item_name, date, quantity_sold, revenue)`
-- Predictive logic: rolling 4-week average sales × par level buffer = suggested batch qty
-
----
-
-## ✅ Completed
+## ✅ Completed Features
 
 ### DashboardAnalytics.tsx
 - [x] Batch Reports Viewer — filterable list, expandable rows, live summary bar, CSV export
 
 ### DashboardWorkflows.tsx
-- [x] Workflow archive/unarchive
-- [x] Toast notifications replacing `alert()` calls
-- [x] Team Status card driven by `clockedInMembers` prop
+- [x] Workflow archive/unarchive; toast notifications; Team Status card
 
 ### DashboardCalendar.tsx
-- [x] Force Delete stuck `in_progress` batches
-- [x] Mark Done, Hard Delete, Copy Batch, Repeat Batch (recurring weekly)
+- [x] Force Delete stuck batches; Mark Done, Hard Delete, Copy Batch, Repeat Batch (recurring weekly)
 
 ### DashboardSchedule.tsx
-- [x] Multi-employee shift creation, shift types (Scheduled/Holiday/Sick)
-- [x] Labour Report, schedule templates, bulk delete, printable export
+- [x] Multi-employee shift creation, shift types, Labour Report, schedule templates, bulk delete, printable export
 - [x] Hourly rate, holiday allowance, labour cost report
-- [x] Holiday request workflow — submit in app, approve/decline on website, push notifications
+- [x] Holiday request workflow — submit in app, approve/decline on website
 
 ### Employee Directory
-- [x] Status: active / on_leave / terminated on `network_member_roles`
-- [x] Edit modal, location assignment, status change modal, invite modal, CSV export
+- [x] Status: active / on_leave / terminated; edit modal, location assignment, invite modal, CSV export
 
 ### Backend / API
-- [x] `api/directory/invite.ts` — Resend wired up, hardened errors, duplicate check
-- [x] `api/directory/index.ts` — uses `network_member_roles` not `team_members`
-- [x] `api/directory/status.ts`, `canClockIn()`, `timeEntries.ts`
+- [x] `api/directory/invite.ts` — Resend integration
+- [x] `api/directory/index.ts`, `status.ts`, `canClockIn()`, `timeEntries.ts`
 - [x] SQL migrations: employee_directory, schedule_features, holiday_requests, currency
+- [x] `api/inventory/scan-order.ts` — OCR + AI parsing endpoint
 
 ---
 
 ## 🔲 Labour Reports — Remaining
 - [ ] Labour report reads `currency_symbol` from location (not hardcoded)
-- [ ] Attach labour summary to end-of-day report
+- [ ] Labour summary display in EoD report UI (service layer done; UI remaining)
 - [ ] Server-side CSV export
 
 ## 🔲 Holiday & Absence — Remaining
@@ -405,16 +179,12 @@ Rules:
 ---
 
 ## 🟡 Post-Launch — Growth Features
-- [ ] POS integration (see Inventory Phase 6)
+- [ ] POS integration (Inventory Phase 6)
 - [ ] Predictive batch scheduling (requires POS + par levels)
-- [ ] Web embed tool
-- [ ] Language packs
-- [ ] QuickBooks integration
-- [ ] Google Calendar sync
+- [ ] Web embed tool; language packs; QuickBooks integration; Google Calendar sync
 
 ## 🔵 Future / Enterprise
-- [ ] Customer order tracking
-- [ ] Equipment maintenance logs
+- [ ] Customer order tracking; equipment maintenance logs
 - [ ] Role-based permissions (Manager / Supervisor / Operator)
 
 ## 🔲 iOS & Play Store Launch
@@ -443,3 +213,7 @@ Rules:
 - Upsert `location_inventory` on unique `(location_id, inventory_item_id)`
 - Invoice images in Supabase Storage bucket `order-scans`, RLS: owner reads/writes own files
 - Invoice parser and recipe parser are completely separate Claude API calls — different prompts, different files
+- `EnvironmentalReportScreen` accepts `editId` param for in-place editing of SoD reports
+- `reports.ts` exports `updateEnvironmentalReport(id, updates)` and `updateDailyReport(id, updates)`
+- Equipment temps (`fridgeTemp`, `freezerTemp`, `proofTemp`, `ovenTemp`) on `environmental_reports` — DB migration required before deploying new SoD screen
+- `fetchInventoryParSnapshot(userId, locationId?)` in `reports.ts` — called at EoD generation time

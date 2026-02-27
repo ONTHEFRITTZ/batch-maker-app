@@ -3,6 +3,8 @@ import { supabase } from "../lib/supabase";
 
 const REPORTS_KEY = "@reports";
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 export interface EnvironmentalReport {
   id: string;
   timestamp: number;
@@ -10,6 +12,11 @@ export interface EnvironmentalReport {
   time: string;
   ambientTemp?: number;
   humidity?: number;
+  // Extended equipment temps (Phase 4)
+  fridgeTemp?: number;
+  freezerTemp?: number;
+  proofTemp?: number;
+  ovenTemp?: number;
   notes?: string;
   createdBy: string;
   userId?: string;
@@ -44,7 +51,6 @@ export interface BatchCompletionReport {
   yieldAmount?: number;
   yieldUnit?: string;
   userId?: string;
-  // Waste fields
   wasted?: boolean;
   wastedAtStep?: number;
   wastedAtStepName?: string;
@@ -53,12 +59,10 @@ export interface BatchCompletionReport {
   ingredientsSkipped?: string[];
 }
 
-// ── Labour summary types ───────────────────────────────────────────────────────
-
 export interface LabourEntry {
   userId: string;
   name: string;
-  clockIn: string;       // ISO string
+  clockIn: string;
   clockOut: string | null;
   totalHours: number;
   hourlyRate: number;
@@ -69,7 +73,26 @@ export interface LabourSummary {
   entries: LabourEntry[];
   totalHours: number;
   totalLabourCost: number;
-  generatedAt: string;   // ISO string
+  generatedAt: string;
+}
+
+// ── Phase 4: par-level inventory snapshot ─────────────────────────────────────
+export interface InventoryParItem {
+  id: string;
+  name: string;
+  category: string;
+  currentQty: number;
+  parLevel: number;
+  unit: string;
+  belowPar: boolean;
+  supplierName?: string;
+}
+
+export interface InventoryParSnapshot {
+  items: InventoryParItem[];
+  belowParCount: number;
+  checkedAt: string;
+  locationId?: string;
 }
 
 export interface DailyReport {
@@ -83,7 +106,8 @@ export interface DailyReport {
   totalYield?: { [unit: string]: number };
   environmentalReports: EnvironmentalReport[];
   batchCompletions: BatchCompletionReport[];
-  labourSummary?: LabourSummary;   // ← NEW
+  labourSummary?: LabourSummary;
+  inventorySnapshot?: InventoryParSnapshot;  // Phase 4
   userId?: string;
 }
 
@@ -93,35 +117,32 @@ interface ReportsData {
   daily: DailyReport[];
 }
 
+// ─── State ────────────────────────────────────────────────────────────────────
+
 let reportsData: ReportsData = {
   environmental: [],
   batchCompletions: [],
   daily: [],
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 async function getCurrentUserId(): Promise<string | null> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     return user?.id || null;
-  } catch (error) {
-    console.error("Error getting user:", error);
+  } catch {
     return null;
   }
 }
 
-export async function initializeReports(): Promise<void> {
-  try {
-    const stored = await AsyncStorage.getItem(REPORTS_KEY);
-    if (stored) {
-      reportsData = JSON.parse(stored);
-      console.log(
-        `Loaded reports from local: ${reportsData.environmental.length} environmental, ${reportsData.batchCompletions.length} batch, ${reportsData.daily.length} daily`,
-      );
-    }
-    await syncFromSupabase();
-  } catch (error) {
-    console.error("Error loading reports:", error);
-  }
+function getTodayDateString(): string {
+  return new Date().toISOString().split("T")[0];
+}
+
+function getTimeString(timestamp: number): string {
+  const d = new Date(timestamp);
+  return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
 async function saveReports(): Promise<void> {
@@ -132,31 +153,41 @@ async function saveReports(): Promise<void> {
   }
 }
 
+// ─── Init & Sync ──────────────────────────────────────────────────────────────
+
+export async function initializeReports(): Promise<void> {
+  try {
+    const stored = await AsyncStorage.getItem(REPORTS_KEY);
+    if (stored) {
+      reportsData = JSON.parse(stored);
+      console.log(
+        `Loaded reports: ${reportsData.environmental.length} SoD, ` +
+        `${reportsData.batchCompletions.length} batch, ${reportsData.daily.length} daily`,
+      );
+    }
+    await syncFromSupabase();
+  } catch (error) {
+    console.error("Error loading reports:", error);
+  }
+}
+
 async function syncFromSupabase(): Promise<void> {
   try {
     const userId = await getCurrentUserId();
-    if (!userId) {
-      console.log("⚠️ No user logged in, skipping Supabase sync");
-      return;
-    }
+    if (!userId) return;
 
-    console.log("🔄 Syncing reports from Supabase...");
-
+    // Batch reports
     const { data: batchReports, error: batchError } = await supabase
       .from("batch_completion_reports")
       .select("*")
       .eq("user_id", userId)
       .order("timestamp", { ascending: false });
 
-    if (batchError) {
-      console.error("Error fetching batch reports:", batchError);
-    } else if (batchReports) {
-      const supabaseIds = new Set(batchReports.map((r) => r.id));
-      const localOnly = reportsData.batchCompletions.filter(
-        (r) => !supabaseIds.has(r.id),
-      );
+    if (!batchError && batchReports) {
+      const supabaseIds = new Set(batchReports.map(r => r.id));
+      const localOnly = reportsData.batchCompletions.filter(r => !supabaseIds.has(r.id));
       reportsData.batchCompletions = [
-        ...batchReports.map((r) => ({
+        ...batchReports.map(r => ({
           ...r,
           userId: r.user_id,
           stepNotes: r.step_notes || {},
@@ -171,32 +202,31 @@ async function syncFromSupabase(): Promise<void> {
         })),
         ...localOnly,
       ];
-      console.log(`✅ Synced ${batchReports.length} batch reports from Supabase`);
     }
 
+    // Environmental (SoD) reports
     const { data: envReports, error: envError } = await supabase
       .from("environmental_reports")
       .select("*")
       .eq("user_id", userId)
       .order("timestamp", { ascending: false });
 
-    if (envError) {
-      console.error("Error fetching environmental reports:", envError);
-    } else if (envReports) {
-      const supabaseIds = new Set(envReports.map((r) => r.id));
-      const localOnly = reportsData.environmental.filter(
-        (r) => !supabaseIds.has(r.id),
-      );
+    if (!envError && envReports) {
+      const supabaseIds = new Set(envReports.map(r => r.id));
+      const localOnly = reportsData.environmental.filter(r => !supabaseIds.has(r.id));
       reportsData.environmental = [
-        ...envReports.map((r) => ({
+        ...envReports.map(r => ({
           ...r,
           userId: r.user_id,
           ambientTemp: r.ambient_temp,
+          fridgeTemp: r.fridge_temp ?? undefined,
+          freezerTemp: r.freezer_temp ?? undefined,
+          proofTemp: r.proof_temp ?? undefined,
+          ovenTemp: r.oven_temp ?? undefined,
           createdBy: r.created_by,
         })),
         ...localOnly,
       ];
-      console.log(`✅ Synced ${envReports.length} environmental reports from Supabase`);
     }
 
     await saveReports();
@@ -208,81 +238,126 @@ async function syncFromSupabase(): Promise<void> {
 async function syncToSupabase(report: any, table: string): Promise<void> {
   try {
     const userId = await getCurrentUserId();
-    if (!userId) {
-      console.log("⚠️ No user logged in, saving locally only");
-      return;
-    }
+    if (!userId) return;
 
     let data: any = { ...report, user_id: userId };
 
     if (table === "batch_completion_reports") {
       data = {
-        id: report.id,
-        user_id: userId,
-        batch_id: report.batchId,
-        batch_name: report.batchName,
-        workflow_id: report.workflowId,
-        workflow_name: report.workflowName,
-        timestamp: report.timestamp,
-        date: report.date,
-        time: report.time,
+        id: report.id, user_id: userId,
+        batch_id: report.batchId, batch_name: report.batchName,
+        workflow_id: report.workflowId, workflow_name: report.workflowName,
+        timestamp: report.timestamp, date: report.date, time: report.time,
         completed_by: report.completedBy,
         batch_size_multiplier: report.batchSizeMultiplier,
         environmental_report_id: report.environmentalReportId,
-        actual_duration: report.actualDuration,
-        notes: report.notes,
-        photos: report.photos,
-        step_notes: report.stepNotes,
+        actual_duration: report.actualDuration, notes: report.notes,
+        photos: report.photos, step_notes: report.stepNotes,
         temperature_log: report.temperatureLog,
         ingredients_used: report.ingredientsUsed,
-        total_cost: report.totalCost,
-        yield_amount: report.yieldAmount,
+        total_cost: report.totalCost, yield_amount: report.yieldAmount,
         yield_unit: report.yieldUnit,
       };
     } else if (table === "environmental_reports") {
       data = {
-        id: report.id,
-        user_id: userId,
-        timestamp: report.timestamp,
-        date: report.date,
-        time: report.time,
-        ambient_temp: report.ambientTemp,
-        humidity: report.humidity,
-        notes: report.notes,
+        id: report.id, user_id: userId,
+        timestamp: report.timestamp, date: report.date, time: report.time,
+        ambient_temp: report.ambientTemp ?? null,
+        humidity: report.humidity ?? null,
+        fridge_temp: report.fridgeTemp ?? null,
+        freezer_temp: report.freezerTemp ?? null,
+        proof_temp: report.proofTemp ?? null,
+        oven_temp: report.ovenTemp ?? null,
+        notes: report.notes ?? null,
         created_by: report.createdBy,
       };
     }
 
     const { error } = await supabase.from(table).upsert(data, { onConflict: "id" });
-    if (error) {
-      console.error(`Error syncing to ${table}:`, error);
-    } else {
-      console.log(`✅ Synced report to ${table}`);
-    }
+    if (error) console.error(`Error syncing to ${table}:`, error);
   } catch (error) {
     console.error("Error syncing to Supabase:", error);
   }
 }
 
-function getTodayDateString(): string {
-  const now = new Date();
-  return now.toISOString().split("T")[0];
+// ─── Phase 4: Par-level inventory snapshot ───────────────────────────────────
+
+async function fetchInventoryParSnapshot(
+  userId: string,
+  locationId?: string,
+): Promise<InventoryParSnapshot | undefined> {
+  try {
+    // Fetch inventory items with par levels and location stock
+    let query = supabase
+      .from("inventory_items")
+      .select(`
+        id, name, category, unit, par_level,
+        suppliers(name),
+        location_inventory(location_id, quantity)
+      `)
+      .eq("owner_id", userId)
+      .not("par_level", "is", null);
+
+    const { data: items, error } = await query;
+    if (error || !items?.length) return undefined;
+
+    const parItems: InventoryParItem[] = items.map((item: any) => {
+      // Get qty for the relevant location (or sum all if no location filter)
+      const locInv: any[] = item.location_inventory ?? [];
+      let currentQty = 0;
+      if (locationId) {
+        const locRow = locInv.find((li: any) => li.location_id === locationId);
+        currentQty = locRow?.quantity ?? 0;
+      } else {
+        currentQty = locInv.reduce((sum: number, li: any) => sum + (li.quantity ?? 0), 0);
+      }
+
+      return {
+        id: item.id,
+        name: item.name,
+        category: item.category ?? 'Other',
+        currentQty,
+        parLevel: item.par_level,
+        unit: item.unit ?? '',
+        belowPar: currentQty < item.par_level,
+        supplierName: item.suppliers?.name ?? undefined,
+      };
+    });
+
+    // Sort: below par first, then alphabetical
+    parItems.sort((a, b) => {
+      if (a.belowPar && !b.belowPar) return -1;
+      if (!a.belowPar && b.belowPar) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    return {
+      items: parItems,
+      belowParCount: parItems.filter(i => i.belowPar).length,
+      checkedAt: new Date().toISOString(),
+      locationId,
+    };
+  } catch (err) {
+    console.warn('Par snapshot fetch failed (non-fatal):', err);
+    return undefined;
+  }
 }
 
-function getTimeString(timestamp: number): string {
-  const date = new Date(timestamp);
-  return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
-}
+// ─── Environmental (SoD) Reports ─────────────────────────────────────────────
 
-// ============================================
-// ENVIRONMENTAL REPORTS
-// ============================================
+export interface EnvironmentalExtras {
+  fridgeTemp?: number;
+  freezerTemp?: number;
+  proofTemp?: number;
+  ovenTemp?: number;
+}
 
 export async function createEnvironmentalReport(
   createdBy: string,
   ambientTemp?: number,
   humidity?: number,
   notes?: string,
+  extras?: EnvironmentalExtras,
 ): Promise<EnvironmentalReport> {
   const timestamp = Date.now();
   const userId = await getCurrentUserId();
@@ -294,6 +369,10 @@ export async function createEnvironmentalReport(
     time: getTimeString(timestamp),
     ambientTemp,
     humidity,
+    fridgeTemp: extras?.fridgeTemp,
+    freezerTemp: extras?.freezerTemp,
+    proofTemp: extras?.proofTemp,
+    ovenTemp: extras?.ovenTemp,
     notes,
     createdBy,
     userId: userId || undefined,
@@ -306,9 +385,48 @@ export async function createEnvironmentalReport(
   return report;
 }
 
+/** Update an existing SoD report (used from ReportsScreen edit flow) */
+export async function updateEnvironmentalReport(
+  id: string,
+  updates: Partial<Omit<EnvironmentalReport, 'id' | 'timestamp' | 'date' | 'time' | 'createdBy' | 'userId'>>,
+): Promise<void> {
+  const idx = reportsData.environmental.findIndex(r => r.id === id);
+  if (idx === -1) throw new Error(`Environmental report ${id} not found`);
+
+  reportsData.environmental[idx] = {
+    ...reportsData.environmental[idx],
+    ...updates,
+  };
+
+  await saveReports();
+
+  // Sync update to Supabase
+  try {
+    const userId = await getCurrentUserId();
+    if (!userId) return;
+    const r = reportsData.environmental[idx];
+    const { error } = await supabase
+      .from("environmental_reports")
+      .update({
+        ambient_temp: r.ambientTemp ?? null,
+        humidity: r.humidity ?? null,
+        fridge_temp: r.fridgeTemp ?? null,
+        freezer_temp: r.freezerTemp ?? null,
+        proof_temp: r.proofTemp ?? null,
+        oven_temp: r.ovenTemp ?? null,
+        notes: r.notes ?? null,
+      })
+      .eq("id", id)
+      .eq("user_id", userId);
+    if (error) console.error("Error updating environmental report:", error);
+  } catch (err) {
+    console.error("updateEnvironmentalReport sync error:", err);
+  }
+}
+
 export function getEnvironmentalReports(date?: string): EnvironmentalReport[] {
-  if (date) return reportsData.environmental.filter((r) => r.date === date);
-  return [...reportsData.environmental];
+  if (date) return reportsData.environmental.filter(r => r.date === date);
+  return [...reportsData.environmental].sort((a, b) => b.timestamp - a.timestamp);
 }
 
 export function getTodaysEnvironmentalReports(): EnvironmentalReport[] {
@@ -316,7 +434,7 @@ export function getTodaysEnvironmentalReports(): EnvironmentalReport[] {
 }
 
 export async function deleteEnvironmentalReport(id: string): Promise<void> {
-  reportsData.environmental = reportsData.environmental.filter((r) => r.id !== id);
+  reportsData.environmental = reportsData.environmental.filter(r => r.id !== id);
   await saveReports();
   const userId = await getCurrentUserId();
   if (userId) {
@@ -324,9 +442,7 @@ export async function deleteEnvironmentalReport(id: string): Promise<void> {
   }
 }
 
-// ============================================
-// BATCH COMPLETION REPORTS
-// ============================================
+// ─── Batch Completion Reports ─────────────────────────────────────────────────
 
 export async function createBatchCompletionReport(
   batchId: string,
@@ -344,8 +460,8 @@ export async function createBatchCompletionReport(
   yieldUnit?: string,
 ): Promise<BatchCompletionReport> {
   const timestamp = Date.now();
-  const todayDate = getTodayDateString();
   const userId = await getCurrentUserId();
+  const todayDate = getTodayDateString();
 
   const todaysEnvReports = getTodaysEnvironmentalReports();
   const environmentalReportId =
@@ -357,24 +473,11 @@ export async function createBatchCompletionReport(
 
   const report: BatchCompletionReport = {
     id: `batch_${timestamp}`,
-    batchId,
-    batchName,
-    workflowId,
-    workflowName,
-    timestamp,
-    date: todayDate,
-    time: getTimeString(timestamp),
-    completedBy,
-    batchSizeMultiplier,
-    environmentalReportId,
-    actualDuration,
-    notes,
-    stepNotes,
-    temperatureLog,
-    ingredientsUsed,
-    totalCost,
-    yieldAmount,
-    yieldUnit,
+    batchId, batchName, workflowId, workflowName,
+    timestamp, date: todayDate, time: getTimeString(timestamp),
+    completedBy, batchSizeMultiplier, environmentalReportId,
+    actualDuration, notes, stepNotes, temperatureLog, ingredientsUsed,
+    totalCost, yieldAmount, yieldUnit,
     userId: userId || undefined,
     wasted: false,
   };
@@ -385,10 +488,6 @@ export async function createBatchCompletionReport(
 
   return report;
 }
-
-// ============================================
-// WASTE REPORTS
-// ============================================
 
 export async function createWasteReport(
   batchId: string,
@@ -405,33 +504,20 @@ export async function createWasteReport(
   actualDuration?: number,
 ): Promise<BatchCompletionReport> {
   const timestamp = Date.now();
-  const todayDate = getTodayDateString();
   const userId = await getCurrentUserId();
-
   const totalCost = ingredientsDeducted?.reduce((sum, ing) => sum + (ing.cost || 0), 0);
 
   const report: BatchCompletionReport = {
     id: `waste_${timestamp}`,
-    batchId,
-    batchName,
-    workflowId,
-    workflowName,
-    timestamp,
-    date: todayDate,
-    time: getTimeString(timestamp),
-    completedBy,
-    batchSizeMultiplier,
-    actualDuration,
+    batchId, batchName, workflowId, workflowName,
+    timestamp, date: getTodayDateString(), time: getTimeString(timestamp),
+    completedBy, batchSizeMultiplier, actualDuration,
     notes: waste_notes,
     ingredientsUsed: ingredientsDeducted,
     totalCost,
     userId: userId || undefined,
-    wasted: true,
-    wastedAtStep,
-    wastedAtStepName,
-    waste_notes,
-    ingredientsDeducted,
-    ingredientsSkipped,
+    wasted: true, wastedAtStep, wastedAtStepName, waste_notes,
+    ingredientsDeducted, ingredientsSkipped,
   };
 
   reportsData.batchCompletions.push(report);
@@ -440,15 +526,10 @@ export async function createWasteReport(
   if (userId) {
     try {
       const { error } = await supabase.from('batch_completion_reports').upsert({
-        id: report.id,
-        user_id: userId,
-        batch_id: report.batchId,
-        batch_name: report.batchName,
-        workflow_id: report.workflowId,
-        workflow_name: report.workflowName,
-        timestamp: report.timestamp,
-        date: report.date,
-        time: report.time,
+        id: report.id, user_id: userId,
+        batch_id: report.batchId, batch_name: report.batchName,
+        workflow_id: report.workflowId, workflow_name: report.workflowName,
+        timestamp: report.timestamp, date: report.date, time: report.time,
         completed_by: report.completedBy,
         batch_size_multiplier: report.batchSizeMultiplier,
         actual_duration: report.actualDuration || null,
@@ -462,7 +543,6 @@ export async function createWasteReport(
         ingredients_skipped: report.ingredientsSkipped || null,
       }, { onConflict: 'id' });
       if (error) console.error('Error syncing waste report:', error);
-      else console.log('✅ Waste report synced to Supabase');
     } catch (err) {
       console.error('syncWasteReport error:', err);
     }
@@ -471,13 +551,9 @@ export async function createWasteReport(
   return report;
 }
 
-// ============================================
-// REPORT QUERIES
-// ============================================
-
 export function getBatchCompletionReports(date?: string): BatchCompletionReport[] {
-  if (date) return reportsData.batchCompletions.filter((r) => r.date === date);
-  return [...reportsData.batchCompletions];
+  if (date) return reportsData.batchCompletions.filter(r => r.date === date);
+  return [...reportsData.batchCompletions].sort((a, b) => b.timestamp - a.timestamp);
 }
 
 export function getTodaysBatchCompletions(): BatchCompletionReport[] {
@@ -485,18 +561,17 @@ export function getTodaysBatchCompletions(): BatchCompletionReport[] {
 }
 
 export function searchBatchReports(query: string): BatchCompletionReport[] {
-  const lowerQuery = query.toLowerCase();
-  return reportsData.batchCompletions.filter(
-    (r) =>
-      r.batchName.toLowerCase().includes(lowerQuery) ||
-      r.workflowName.toLowerCase().includes(lowerQuery) ||
-      r.completedBy.toLowerCase().includes(lowerQuery) ||
-      r.notes?.toLowerCase().includes(lowerQuery),
+  const q = query.toLowerCase();
+  return reportsData.batchCompletions.filter(r =>
+    r.batchName.toLowerCase().includes(q) ||
+    r.workflowName.toLowerCase().includes(q) ||
+    r.completedBy.toLowerCase().includes(q) ||
+    r.notes?.toLowerCase().includes(q),
   );
 }
 
 export async function deleteBatchCompletionReport(id: string): Promise<void> {
-  reportsData.batchCompletions = reportsData.batchCompletions.filter((r) => r.id !== id);
+  reportsData.batchCompletions = reportsData.batchCompletions.filter(r => r.id !== id);
   await saveReports();
   const userId = await getCurrentUserId();
   if (userId) {
@@ -504,19 +579,12 @@ export async function deleteBatchCompletionReport(id: string): Promise<void> {
   }
 }
 
-// ============================================
-// LABOUR SUMMARY (fetched from Supabase)
-// ============================================
+// ─── Labour Summary ───────────────────────────────────────────────────────────
 
-async function fetchLabourSummaryForDate(
-  userId: string,
-  date: string
-): Promise<LabourSummary> {
-  // date = 'YYYY-MM-DD'
+async function fetchLabourSummaryForDate(userId: string, date: string): Promise<LabourSummary> {
   const dayStart = `${date}T00:00:00.000Z`;
   const dayEnd   = `${date}T23:59:59.999Z`;
 
-  // 1. Fetch all time entries for this owner on this date
   const { data: entries, error: entriesError } = await supabase
     .from('time_entries')
     .select('user_id, clock_in, clock_out, total_hours')
@@ -528,7 +596,6 @@ async function fetchLabourSummaryForDate(
     return { entries: [], totalHours: 0, totalLabourCost: 0, generatedAt: new Date().toISOString() };
   }
 
-  // 2. Fetch hourly rates + names for all users who clocked in
   const userIds = [...new Set(entries.map(e => e.user_id))];
 
   const { data: roles } = await supabase
@@ -548,15 +615,14 @@ async function fetchLabourSummaryForDate(
   const nameMap: Record<string, string> = {};
   profiles?.forEach((p: any) => { nameMap[p.id] = p.device_name || p.email || 'Unknown'; });
 
-  // 3. Build per-entry labour data
   const labourEntries: LabourEntry[] = entries.map(e => {
     const hours = e.total_hours ?? 0;
     const rate  = rateMap[e.user_id] ?? 0;
     return {
-      userId:     e.user_id,
-      name:       nameMap[e.user_id] ?? 'Unknown',
-      clockIn:    e.clock_in,
-      clockOut:   e.clock_out,
+      userId: e.user_id,
+      name: nameMap[e.user_id] ?? 'Unknown',
+      clockIn: e.clock_in,
+      clockOut: e.clock_out,
       totalHours: hours,
       hourlyRate: rate,
       labourCost: Math.round(hours * rate * 100) / 100,
@@ -574,11 +640,12 @@ async function fetchLabourSummaryForDate(
   };
 }
 
-// ============================================
-// DAILY REPORTS
-// ============================================
+// ─── Daily Reports ────────────────────────────────────────────────────────────
 
-export async function generateDailyReport(date?: string): Promise<DailyReport> {
+export async function generateDailyReport(
+  date?: string,
+  locationId?: string,
+): Promise<DailyReport> {
   const targetDate = date || getTodayDateString();
   const timestamp  = Date.now();
   const userId     = await getCurrentUserId();
@@ -586,21 +653,20 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
   const envReports   = getEnvironmentalReports(targetDate);
   const batchReports = getBatchCompletionReports(targetDate);
 
-  const totalBatches: number = batchReports.length;
   const batchesByWorkflow: { [workflowId: string]: number } = {};
-  let totalDuration      = 0;
-  let countWithDuration  = 0;
+  let totalDuration     = 0;
+  let countWithDuration = 0;
   let totalIngredientCost = 0;
   const totalYield: { [unit: string]: number } = {};
 
-  batchReports.forEach((report) => {
-    if (!batchesByWorkflow[report.workflowId]) batchesByWorkflow[report.workflowId] = 0;
-    batchesByWorkflow[report.workflowId]++;
-    if (report.actualDuration) { totalDuration += report.actualDuration; countWithDuration++; }
-    if (report.totalCost) totalIngredientCost += report.totalCost;
-    if (report.yieldAmount && report.yieldUnit) {
-      if (!totalYield[report.yieldUnit]) totalYield[report.yieldUnit] = 0;
-      totalYield[report.yieldUnit] += report.yieldAmount;
+  batchReports.forEach(r => {
+    if (!batchesByWorkflow[r.workflowId]) batchesByWorkflow[r.workflowId] = 0;
+    batchesByWorkflow[r.workflowId]++;
+    if (r.actualDuration) { totalDuration += r.actualDuration; countWithDuration++; }
+    if (r.totalCost) totalIngredientCost += r.totalCost;
+    if (r.yieldAmount && r.yieldUnit) {
+      if (!totalYield[r.yieldUnit]) totalYield[r.yieldUnit] = 0;
+      totalYield[r.yieldUnit] += r.yieldAmount;
     }
   });
 
@@ -608,14 +674,29 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
     ? Math.round(totalDuration / countWithDuration)
     : 0;
 
-  // ── Fetch labour summary from Supabase (admin-only data) ──────────────────
+  // Labour summary
   let labourSummary: LabourSummary | undefined;
   if (userId) {
     try {
       labourSummary = await fetchLabourSummaryForDate(userId, targetDate);
-      console.log(`✅ Labour summary: ${labourSummary.entries.length} entries, £${labourSummary.totalLabourCost}`);
     } catch (err) {
       console.warn('Labour summary fetch failed (non-fatal):', err);
+    }
+  }
+
+  // Phase 4: Inventory par snapshot
+  let inventorySnapshot: InventoryParSnapshot | undefined;
+  if (userId) {
+    try {
+      inventorySnapshot = await fetchInventoryParSnapshot(userId, locationId);
+      if (inventorySnapshot) {
+        console.log(
+          `✅ Inventory snapshot: ${inventorySnapshot.items.length} items, ` +
+          `${inventorySnapshot.belowParCount} below par`,
+        );
+      }
+    } catch (err) {
+      console.warn('Inventory snapshot fetch failed (non-fatal):', err);
     }
   }
 
@@ -623,7 +704,7 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
     id: `daily_${targetDate}`,
     date: targetDate,
     timestamp,
-    totalBatches,
+    totalBatches: batchReports.length,
     batchesByWorkflow,
     averageDuration,
     totalIngredientCost: totalIngredientCost > 0 ? totalIngredientCost : undefined,
@@ -631,18 +712,18 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
     environmentalReports: envReports,
     batchCompletions: batchReports,
     labourSummary,
+    inventorySnapshot,
     userId: userId || undefined,
   };
 
-  // ── Replace any existing daily report for this date ───────────────────────
-  reportsData.daily = reportsData.daily.filter((r) => r.date !== targetDate);
+  // Replace any existing daily report for this date
+  reportsData.daily = reportsData.daily.filter(r => r.date !== targetDate);
   reportsData.daily.push(report);
   await saveReports();
 
-  // ── Archive to Supabase reports table ────────────────────────────────────
+  // Archive to Supabase
   if (userId) {
     try {
-      // No UPDATE policy exists, so delete any existing record for this date first
       await supabase
         .from('reports')
         .delete()
@@ -662,6 +743,7 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
           totalIngredientCost: report.totalIngredientCost ?? null,
           totalYield: report.totalYield ?? null,
           labourSummary: report.labourSummary ?? null,
+          inventorySnapshot: report.inventorySnapshot ?? null,
           environmentalReports: report.environmentalReports,
           batchCompletions: report.batchCompletions,
         },
@@ -669,19 +751,13 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
       });
 
       if (error) {
-        console.error('Failed to archive daily report to Supabase:', error);
+        console.error('Failed to archive daily report:', error);
       } else {
-        console.log('✅ Daily report archived to Supabase');
-
-        // ── Clear today's local batch + environmental data (fresh start) ───
-        reportsData.batchCompletions = reportsData.batchCompletions.filter(
-          (r) => r.date !== targetDate
-        );
-        reportsData.environmental = reportsData.environmental.filter(
-          (r) => r.date !== targetDate
-        );
+        // Clear today's local data — fresh start tomorrow
+        reportsData.batchCompletions = reportsData.batchCompletions.filter(r => r.date !== targetDate);
+        reportsData.environmental    = reportsData.environmental.filter(r => r.date !== targetDate);
         await saveReports();
-        console.log('🧹 Local data cleared for', targetDate);
+        console.log('✅ Daily report archived, local data cleared for', targetDate);
       }
     } catch (err) {
       console.error('Error archiving daily report:', err);
@@ -691,22 +767,56 @@ export async function generateDailyReport(date?: string): Promise<DailyReport> {
   return report;
 }
 
+/** Update notes on an existing EoD (daily) report */
+export async function updateDailyReport(
+  id: string,
+  updates: { notes?: string; endNotes?: string },
+): Promise<void> {
+  const idx = reportsData.daily.findIndex(r => r.id === id);
+  if (idx === -1) throw new Error(`Daily report ${id} not found`);
+
+  reportsData.daily[idx] = {
+    ...reportsData.daily[idx],
+    ...(updates as any),
+  };
+
+  await saveReports();
+
+  // Persist to Supabase reports.data JSONB
+  try {
+    const userId = await getCurrentUserId();
+    if (!userId) return;
+    const r = reportsData.daily[idx];
+    await supabase
+      .from('reports')
+      .update({
+        data: {
+          ...r,
+          notes: (updates as any).notes ?? null,
+          endNotes: (updates as any).endNotes ?? null,
+        },
+      })
+      .eq('id', id)
+      .eq('user_id', userId);
+  } catch (err) {
+    console.warn('updateDailyReport Supabase sync failed (non-fatal):', err);
+  }
+}
+
 export function getDailyReports(): DailyReport[] {
   return [...reportsData.daily].sort((a, b) => b.timestamp - a.timestamp);
 }
 
 export function getDailyReport(date: string): DailyReport | undefined {
-  return reportsData.daily.find((r) => r.date === date);
+  return reportsData.daily.find(r => r.date === date);
 }
 
 export async function deleteDailyReport(id: string): Promise<void> {
-  reportsData.daily = reportsData.daily.filter((r) => r.id !== id);
+  reportsData.daily = reportsData.daily.filter(r => r.id !== id);
   await saveReports();
 }
 
-// ============================================
-// MANUAL SYNC
-// ============================================
+// ─── Manual sync ──────────────────────────────────────────────────────────────
 
 export async function forceSyncToSupabase(): Promise<void> {
   console.log("🔄 Force syncing all reports to Supabase...");
@@ -715,15 +825,10 @@ export async function forceSyncToSupabase(): Promise<void> {
       const userId = await getCurrentUserId();
       if (userId) {
         await supabase.from('batch_completion_reports').upsert({
-          id: report.id,
-          user_id: userId,
-          batch_id: report.batchId,
-          batch_name: report.batchName,
-          workflow_id: report.workflowId,
-          workflow_name: report.workflowName,
-          timestamp: report.timestamp,
-          date: report.date,
-          time: report.time,
+          id: report.id, user_id: userId,
+          batch_id: report.batchId, batch_name: report.batchName,
+          workflow_id: report.workflowId, workflow_name: report.workflowName,
+          timestamp: report.timestamp, date: report.date, time: report.time,
           completed_by: report.completedBy,
           batch_size_multiplier: report.batchSizeMultiplier,
           actual_duration: report.actualDuration || null,
@@ -751,65 +856,42 @@ export async function forceSyncFromSupabase(): Promise<void> {
   await syncFromSupabase();
 }
 
-// ============================================
-// ANALYTICS
-// ============================================
+// ─── Analytics ────────────────────────────────────────────────────────────────
 
-export function getWorkflowStats(workflowId: string): {
-  totalBatches: number;
-  totalWasted: number;
-  averageDuration: number;
-  lastCompleted?: number;
-  totalCost?: number;
-  totalYield?: { [unit: string]: number };
-} {
-  const batches = reportsData.batchCompletions.filter((r) => r.workflowId === workflowId);
-  const wasted  = batches.filter((r) => r.wasted);
-
-  let totalDuration    = 0;
-  let countWithDuration = 0;
-  let lastCompleted: number | undefined;
-  let totalCost        = 0;
+export function getWorkflowStats(workflowId: string) {
+  const batches = reportsData.batchCompletions.filter(r => r.workflowId === workflowId);
+  const wasted  = batches.filter(r => r.wasted);
+  let totalDuration = 0, countWithDuration = 0, lastCompleted: number | undefined, totalCost = 0;
   const totalYield: { [unit: string]: number } = {};
 
-  batches.forEach((batch) => {
-    if (batch.actualDuration) { totalDuration += batch.actualDuration; countWithDuration++; }
-    if (!lastCompleted || batch.timestamp > lastCompleted) lastCompleted = batch.timestamp;
-    if (batch.totalCost) totalCost += batch.totalCost;
-    if (batch.yieldAmount && batch.yieldUnit) {
-      if (!totalYield[batch.yieldUnit]) totalYield[batch.yieldUnit] = 0;
-      totalYield[batch.yieldUnit] += batch.yieldAmount;
+  batches.forEach(b => {
+    if (b.actualDuration) { totalDuration += b.actualDuration; countWithDuration++; }
+    if (!lastCompleted || b.timestamp > lastCompleted) lastCompleted = b.timestamp;
+    if (b.totalCost) totalCost += b.totalCost;
+    if (b.yieldAmount && b.yieldUnit) {
+      if (!totalYield[b.yieldUnit]) totalYield[b.yieldUnit] = 0;
+      totalYield[b.yieldUnit] += b.yieldAmount;
     }
   });
 
   return {
     totalBatches: batches.length,
-    totalWasted:  wasted.length,
-    averageDuration: countWithDuration > 0
-      ? Math.round(totalDuration / countWithDuration)
-      : 0,
+    totalWasted: wasted.length,
+    averageDuration: countWithDuration > 0 ? Math.round(totalDuration / countWithDuration) : 0,
     lastCompleted,
     totalCost: totalCost > 0 ? totalCost : undefined,
     totalYield: Object.keys(totalYield).length > 0 ? totalYield : undefined,
   };
 }
 
-export function getDateRangeReports(
-  startDate: string,
-  endDate: string,
-): {
-  environmental: EnvironmentalReport[];
-  batchCompletions: BatchCompletionReport[];
-} {
+export function getDateRangeReports(startDate: string, endDate: string) {
   return {
-    environmental:  reportsData.environmental.filter((r) => r.date >= startDate && r.date <= endDate),
-    batchCompletions: reportsData.batchCompletions.filter((r) => r.date >= startDate && r.date <= endDate),
+    environmental:    reportsData.environmental.filter(r => r.date >= startDate && r.date <= endDate),
+    batchCompletions: reportsData.batchCompletions.filter(r => r.date >= startDate && r.date <= endDate),
   };
 }
 
-// ============================================
-// EXPORT
-// ============================================
+// ─── Export ───────────────────────────────────────────────────────────────────
 
 export function exportReportsAsJSON(): string {
   return JSON.stringify(reportsData, null, 2);
@@ -817,37 +899,36 @@ export function exportReportsAsJSON(): string {
 
 export function generateBatchReportsCSV(): string {
   let csv = "Date,Time,Batch Name,Workflow,Station,Size,Duration (min),Cost,Yield,Wasted,Wasted At Step,Waste Reason,Notes\n";
-  reportsData.batchCompletions.forEach((report) => {
-    const cost       = report.totalCost ? `${report.totalCost.toFixed(2)}` : "";
-    const yieldStr   = report.yieldAmount && report.yieldUnit ? `${report.yieldAmount}${report.yieldUnit}` : "";
-    const notes      = (report.notes || "").replace(/,/g, ";").replace(/\n/g, " ");
-    const wastedStr  = report.wasted ? "Yes" : "No";
-    const wastedStep = report.wasted ? `Step ${(report.wastedAtStep ?? 0) + 1}: ${report.wastedAtStepName || ''}` : "";
-    const wasteReason = (report.waste_notes || "").replace(/,/g, ";");
-    csv += `${report.date},${report.time},"${report.batchName}","${report.workflowName}",${report.completedBy},${report.batchSizeMultiplier}x,${report.actualDuration || ""},${cost},${yieldStr},${wastedStr},"${wastedStep}","${wasteReason}","${notes}"\n`;
+  reportsData.batchCompletions.forEach(r => {
+    const cost      = r.totalCost ? r.totalCost.toFixed(2) : "";
+    const yieldStr  = r.yieldAmount && r.yieldUnit ? `${r.yieldAmount}${r.yieldUnit}` : "";
+    const notes     = (r.notes || "").replace(/,/g, ";").replace(/\n/g, " ");
+    const wastedStr = r.wasted ? "Yes" : "No";
+    const wastedStep = r.wasted ? `Step ${(r.wastedAtStep ?? 0) + 1}: ${r.wastedAtStepName || ''}` : "";
+    const wasteReason = (r.waste_notes || "").replace(/,/g, ";");
+    csv += `${r.date},${r.time},"${r.batchName}","${r.workflowName}",${r.completedBy},${r.batchSizeMultiplier}x,${r.actualDuration || ""},${cost},${yieldStr},${wastedStr},"${wastedStep}","${wasteReason}","${notes}"\n`;
   });
   return csv;
 }
 
 export function generateEnvironmentalReportsCSV(): string {
-  let csv = "Date,Time,Station,Temperature (°C),Humidity (%),Notes\n";
-  reportsData.environmental.forEach((report) => {
-    const notes = (report.notes || "").replace(/,/g, ";").replace(/\n/g, " ");
-    csv += `${report.date},${report.time},${report.createdBy},${report.ambientTemp || ""},${report.humidity || ""},"${notes}"\n`;
+  let csv = "Date,Time,Station,Ambient Temp (°C),Humidity (%),Fridge (°C),Freezer (°C),Proof Box (°C),Oven (°C),Notes\n";
+  reportsData.environmental.forEach(r => {
+    const notes = (r.notes || "").replace(/,/g, ";").replace(/\n/g, " ");
+    csv += `${r.date},${r.time},${r.createdBy},${r.ambientTemp ?? ""},${r.humidity ?? ""},${r.fridgeTemp ?? ""},${r.freezerTemp ?? ""},${r.proofTemp ?? ""},${r.ovenTemp ?? ""},"${notes}"\n`;
   });
   return csv;
 }
 
 export function generateDailyReportsCSV(): string {
-  let csv = "Date,Total Batches,Avg Duration (min),Total Cost,Workflows,Total Labour Hours,Total Labour Cost\n";
-  reportsData.daily.forEach((report) => {
-    const workflows = Object.entries(report.batchesByWorkflow)
-      .map(([wf, count]) => `${wf}:${count}`)
-      .join("; ");
-    const cost         = report.totalIngredientCost ? `${report.totalIngredientCost.toFixed(2)}` : "";
-    const labourHours  = report.labourSummary ? report.labourSummary.totalHours.toFixed(2) : "";
-    const labourCost   = report.labourSummary ? report.labourSummary.totalLabourCost.toFixed(2) : "";
-    csv += `${report.date},${report.totalBatches},${report.averageDuration},${cost},"${workflows}",${labourHours},${labourCost}\n`;
+  let csv = "Date,Total Batches,Avg Duration (min),Total Cost,Workflows,Labour Hours,Labour Cost,Below Par Items\n";
+  reportsData.daily.forEach(r => {
+    const workflows  = Object.entries(r.batchesByWorkflow).map(([wf, c]) => `${wf}:${c}`).join("; ");
+    const cost       = r.totalIngredientCost ? r.totalIngredientCost.toFixed(2) : "";
+    const labourHrs  = r.labourSummary ? r.labourSummary.totalHours.toFixed(2) : "";
+    const labourCost = r.labourSummary ? r.labourSummary.totalLabourCost.toFixed(2) : "";
+    const belowPar   = r.inventorySnapshot ? r.inventorySnapshot.belowParCount : "";
+    csv += `${r.date},${r.totalBatches},${r.averageDuration},${cost},"${workflows}",${labourHrs},${labourCost},${belowPar}\n`;
   });
   return csv;
 }
