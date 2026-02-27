@@ -287,7 +287,6 @@ async function fetchInventoryParSnapshot(
   locationId?: string,
 ): Promise<InventoryParSnapshot | undefined> {
   try {
-    // Fetch inventory items with par levels and location stock
     let query = supabase
       .from("inventory_items")
       .select(`
@@ -302,7 +301,6 @@ async function fetchInventoryParSnapshot(
     if (error || !items?.length) return undefined;
 
     const parItems: InventoryParItem[] = items.map((item: any) => {
-      // Get qty for the relevant location (or sum all if no location filter)
       const locInv: any[] = item.location_inventory ?? [];
       let currentQty = 0;
       if (locationId) {
@@ -324,7 +322,6 @@ async function fetchInventoryParSnapshot(
       };
     });
 
-    // Sort: below par first, then alphabetical
     parItems.sort((a, b) => {
       if (a.belowPar && !b.belowPar) return -1;
       if (!a.belowPar && b.belowPar) return 1;
@@ -400,7 +397,6 @@ export async function updateEnvironmentalReport(
 
   await saveReports();
 
-  // Sync update to Supabase
   try {
     const userId = await getCurrentUserId();
     if (!userId) return;
@@ -758,6 +754,27 @@ export async function generateDailyReport(
         reportsData.environmental    = reportsData.environmental.filter(r => r.date !== targetDate);
         await saveReports();
         console.log('✅ Daily report archived, local data cleared for', targetDate);
+
+        // Trigger POS sync for today's date — fire and forget, never blocks EoD
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            fetch('https://fjcpscyxrppcderqzgpa.supabase.co/functions/v1/sync-pos', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`,
+              },
+              body: JSON.stringify({ date: targetDate }),
+            }).then(() => {
+              console.log('✅ POS sync triggered for', targetDate);
+            }).catch((err) => {
+              console.warn('POS sync trigger failed (non-fatal):', err);
+            });
+          }
+        } catch (err) {
+          console.warn('POS sync trigger setup failed (non-fatal):', err);
+        }
       }
     } catch (err) {
       console.error('Error archiving daily report:', err);

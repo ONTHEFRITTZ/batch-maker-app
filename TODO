@@ -1,5 +1,5 @@
 # Batch Maker — Master To-Do List
-_Last updated: 2026-02-26_
+_Last updated: 2026-02-27_
 
 ---
 
@@ -19,6 +19,7 @@ _Last updated: 2026-02-26_
 - [x] Date field overflow on Analytics — fixed independently
 - [x] Cannot delete wasted batches — fixed independently
 - [x] Account/Settings/Directory pages missing background — `dashboard-bg` wrapper added
+- [x] Clock in/out failing — `location_id` + `updated_at` added to `time_entries` insert/update in `DashboardSchedule.tsx`
 
 ---
 
@@ -43,87 +44,27 @@ _Last updated: 2026-02-26_
 
 ### Reports — App Overhaul ✅
 - [x] **`ReportsScreen.tsx` fully rewritten**
-  - Tabs reduced to 2: **📅 Day Reports** + **🧺 Batches**
-  - "Environmental Report" renamed to **Start of Day** everywhere
-  - SoD and EoD reports live on the same Day Reports tab
-  - Today summary card shows SoD / EoD / batch count at a glance
-  - `+ Report` button opens a smart bottom-sheet modal
-    - Detects if SoD done today → shows "Needed" badge if not
-    - Detects active workday → shows "Open" badge on EoD option
-  - Every report card taps open a full-screen detail modal
-  - SoD detail: temp, humidity, equipment temps, notes + Edit button
-  - EoD detail: batch breakdown, workflow summary, editable notes
-  - Batch detail: all fields, waste info with red banner, waste notes
-  - Delete from all detail views
 - [x] **`EnvironmentalReportScreen.tsx` overhauled**
-  - Renamed to "Start of Day Report" throughout UI
-  - Accepts `editId` param — pre-fills all fields for editing existing reports
-  - Added 4 equipment temp fields: Fridge, Freezer, Proof Box, Oven (2-column grid layout)
-  - "Update Report" / "Save Report" modes; loading spinner in edit mode
 - [x] **`reports.ts` service updated**
-  - `createEnvironmentalReport` — new `extras` param for equipment temps; syncs all new columns
-  - `updateEnvironmentalReport(id, updates)` — new function; updates local + Supabase
-  - `updateDailyReport(id, updates)` — new function; updates notes; syncs to `reports.data` JSONB
-  - `generateDailyReport` — now fetches inventory par snapshot (Phase 4 integration)
-  - `DailyReport` type — new `inventorySnapshot?: InventoryParSnapshot` field
-  - SoD CSV export includes all equipment temp columns
-  - EoD CSV export includes "Below Par Items" count column
-  - **DB migration required:**
-    ```sql
-    ALTER TABLE environmental_reports
-      ADD COLUMN IF NOT EXISTS fridge_temp numeric,
-      ADD COLUMN IF NOT EXISTS freezer_temp numeric,
-      ADD COLUMN IF NOT EXISTS proof_temp numeric,
-      ADD COLUMN IF NOT EXISTS oven_temp numeric;
-    ```
 
 ---
 
 ## 🏗️ Inventory System — Major Upgrade
 
-### Core Principles
-- Inventory is **location-specific** — employees must be clocked in at a location to update it
-- **System categories are locked**: Produce, Meat, Seafood, Dairy, Dry Goods, Liquor, Beer, Wine, Non-Alcoholic, Cleaning, Paper/Supplies, Other
-- Duplicate items: merge silently — admin cleans up later
-- Backorders: update only quantity received; low stock alerts stay active for unreceived items
-- Currency from `locations.currency_symbol` — never hardcoded
-
----
-
 ### Phase 1 — Database Migration ✅
-- [x] `suppliers` table — name, contact, phone, email, payment_terms, default_tax
-- [x] `inventory_items` table — owner-scoped; locked category CHECK; par_level, par_reset_on_sod
-- [x] `location_inventory` table — per-location quantities; unique on `(location_id, inventory_item_id)`
-- [x] `invoices` table — supplier_id, invoice_number, date, status (paid/unpaid), financials, raw_ocr_text
-- [x] `invoice_line_items` table — invoice_id, inventory_item_id, name, size, qty, unit_price, extended_price, received (backorder flag)
-- [x] `inventory_transfers` table — from/to location, item, quantity, transferred_by
-- [x] RLS policies — owner-only access on all new tables
-- [x] Supabase Storage bucket `order-scans` — RLS: owner reads/writes own files
+- [x] All tables: `suppliers`, `inventory_items`, `location_inventory`, `invoices`, `invoice_line_items`, `inventory_transfers`
+- [x] RLS policies; Supabase Storage bucket `order-scans`
 
 ### Phase 2 — Invoice / Packing Slip Scanner (App) ✅
-- [x] `OrderScannerScreen.tsx` — camera UI, base64 image capture, clock-in gate enforced
-  - Import path: `../../lib/supabase`; uses direct `supabase` import (AsyncStorage pattern)
-- [x] `api/inventory/scan-order.ts` — Next.js API endpoint
-  - Auth via `getUserFromRequest`; clock-in check via `time_entries`
-  - Google Vision OCR → Claude Sonnet parses → locked category list
-  - Returns `{ success, rawText, parsed }` to app
-  - Env vars: `ANTHROPIC_API_KEY`, `GOOGLE_VISION_API_KEY`
+- [x] `OrderScannerScreen.tsx`, `api/inventory/scan-order.ts`
 
 ### Phase 3 — Supplier Management (Website Dashboard) ✅
-- [x] `DashboardInventory.tsx` — complete new component, 4-tab interface
-  - **📦 Items** — inventory list, qty vs par_level, low stock badges, add/edit/delete, category filter
-  - **🧾 Invoices** — all invoices across suppliers, expandable line items, backorder indicators, mark paid/unpaid, summary cards
-  - **🏭 Suppliers** — list → detail view, invoice history, total spend, unpaid balance, add/edit/delete
-  - **🔄 Transfers** — log location-to-location transfers, view transfer history
-  - Currency always from `locations.currency_symbol`; toast notifications throughout
+- [x] `DashboardInventory.tsx` — 4-tab interface: Items, Invoices, Suppliers, Transfers
 
 ### Phase 4 — Par Levels & Start of Day Integration ✅ (partial)
-- [x] `fetchInventoryParSnapshot()` in `reports.ts` — queries `inventory_items` + `location_inventory`
-- [x] `InventoryParSnapshot` / `InventoryParItem` types exported from `reports.ts`
-- [x] `generateDailyReport()` — attaches `inventorySnapshot` to EoD report; below-par items sorted first
-- [x] EoD detail modal in `ReportsScreen.tsx` — inventory snapshot section in report view
+- [x] `fetchInventoryParSnapshot()`, `InventoryParSnapshot` types, `generateDailyReport()`, EoD detail modal
 - [ ] `StartOfDayReportScreen.tsx` — add inventory section; "Add to order list" button per flagged item
-- [ ] `DashboardOverview.tsx` — low stock alert card using `location_inventory` + `par_level`
+- [ ] `DashboardOverview.tsx` — low stock alert card
 - [ ] Stamp `last_checked_at` on `par_reset_on_sod = true` items when SoD generated
 
 ### Phase 5 — Dashboard Analytics — Inventory 🔲
@@ -132,12 +73,31 @@ _Last updated: 2026-02-26_
 - [ ] Bar/pie chart: spend by category; bar chart: spend by supplier
 - [ ] Date range filter + CSV export
 
-### Phase 6 — POS Integration (Post-Launch) 🔲
-- [ ] Square OAuth + daily sync (priority 1)
-- [ ] Toast, Lightspeed, Clover
-- [ ] `pos_sales` table: `(owner_id, location_id, item_name, date, quantity_sold, revenue)`
-- [ ] Predictive scheduling: rolling 4-week average × par buffer → suggested batch qty
-- [ ] Feed suggestions into `DashboardCalendar.tsx`
+### Phase 6 — POS Integration 🔄 IN PROGRESS
+- [x] `migration_pos.sql` — `pos_connections` + `pos_sales` tables with RLS
+- [x] `lib/posEncryption.ts` — AES-256-GCM token encrypt/decrypt (Node.js)
+- [x] `lib/predictiveSchedule.ts` — rolling 4-week avg → suggested batch qty + date
+- [x] `pages/api/pos/connect.ts` — initiates OAuth redirect for all 4 providers
+- [x] `pages/api/pos/callback.ts` — exchanges code for tokens, encrypts + saves to DB
+- [x] `pages/api/pos/disconnect.ts` — deletes connection + purges cached sales
+- [x] `pages/api/pos/connections.ts` — returns connection status (no tokens exposed)
+- [x] `supabase/functions/sync-pos/index.ts` — Deno edge function: daily cron, loops all connections, upserts sales
+- [x] `lib/supabase.ts` — added `getUserFromRequest()`, `createAuthenticatedClient()` exports
+- [x] `lib/dashboard-types.ts` — added `PosConnection` and `PosSale` interfaces
+- [x] `DashboardCalendar.tsx` — Phase 6 patch fully applied (suggestion badges, predictive panel, upcoming demand)
+- [x] `batch-maker-api/tsconfig.json` — removed erroneous cross-project include for `posEncryption.ts`
+- [x] `components/POSConnectionCards.tsx` — Connect/Disconnect UI for all 4 providers
+- [x] `components/POSSalesAnalytics.tsx` — analytics panel: top sellers, slow movers, revenue by DOW
+- [x] `pages/connections.tsx` — standalone Connections page, linked from dashboard hamburger menu
+- [x] `dashboard.tsx` — Connections link added to hamburger menu
+- [x] `DashboardAnalytics.tsx` — `POSSalesAnalytics` wired into POS sub-tab; `VALID_TABS` updated to include `'pos'`
+- [x] Env vars added to `.env.local`: `POS_ENCRYPTION_KEY`, `SQUARE_CLIENT_ID`, `SQUARE_CLIENT_SECRET`, `LIGHTSPEED_CLIENT_ID`, `LIGHTSPEED_CLIENT_SECRET`, `NEXT_PUBLIC_APP_URL`
+- [x] Square OAuth app setup — production credentials configured (developer.squareup.com)
+- [x] Lightspeed OAuth app setup — production credentials configured, redirect URL set
+- [ ] **Clover OAuth app setup** — create app at clover.com/developers, get Client ID + Secret, add redirect URL `https://batchmaker.app/api/pos/callback`, add env vars `CLOVER_CLIENT_ID` + `CLOVER_CLIENT_SECRET`
+- [ ] Toast — deferred; requires partner approval process + different auth flow (client_credentials, not OAuth redirect). Revisit post-launch.
+- [ ] Deploy `sync-pos` edge function + set Supabase secrets (`POS_ENCRYPTION_KEY`, provider client IDs/secrets)
+- [ ] Test Square OAuth flow end to end — connect, confirm LIVE badge, disconnect
 
 ---
 
@@ -145,17 +105,20 @@ _Last updated: 2026-02-26_
 
 ### DashboardAnalytics.tsx
 - [x] Batch Reports Viewer — filterable list, expandable rows, live summary bar, CSV export
+- [x] POS Sales Analytics tab — top sellers, slow movers, revenue by DOW, date range filter
 
 ### DashboardWorkflows.tsx
 - [x] Workflow archive/unarchive; toast notifications; Team Status card
 
 ### DashboardCalendar.tsx
 - [x] Force Delete stuck batches; Mark Done, Hard Delete, Copy Batch, Repeat Batch (recurring weekly)
+- [x] Phase 6 POS suggestions fully integrated
 
 ### DashboardSchedule.tsx
 - [x] Multi-employee shift creation, shift types, Labour Report, schedule templates, bulk delete, printable export
 - [x] Hourly rate, holiday allowance, labour cost report
 - [x] Holiday request workflow — submit in app, approve/decline on website
+- [x] Clock in/out `location_id` + `updated_at` fix
 
 ### Employee Directory
 - [x] Status: active / on_leave / terminated; edit modal, location assignment, invite modal, CSV export
@@ -165,6 +128,7 @@ _Last updated: 2026-02-26_
 - [x] `api/directory/index.ts`, `status.ts`, `canClockIn()`, `timeEntries.ts`
 - [x] SQL migrations: employee_directory, schedule_features, holiday_requests, currency
 - [x] `api/inventory/scan-order.ts` — OCR + AI parsing endpoint
+- [x] `lib/supabase.ts` — `getUserFromRequest()`, `createAuthenticatedClient()` added
 
 ---
 
@@ -179,7 +143,7 @@ _Last updated: 2026-02-26_
 ---
 
 ## 🟡 Post-Launch — Growth Features
-- [ ] POS integration (Inventory Phase 6)
+- [ ] POS integration — Clover setup remaining; Toast deferred post-launch
 - [ ] Predictive batch scheduling (requires POS + par levels)
 - [ ] Web embed tool; language packs; QuickBooks integration; Google Calendar sync
 
@@ -217,3 +181,9 @@ _Last updated: 2026-02-26_
 - `reports.ts` exports `updateEnvironmentalReport(id, updates)` and `updateDailyReport(id, updates)`
 - Equipment temps (`fridgeTemp`, `freezerTemp`, `proofTemp`, `ovenTemp`) on `environmental_reports` — DB migration required before deploying new SoD screen
 - `fetchInventoryParSnapshot(userId, locationId?)` in `reports.ts` — called at EoD generation time
+- POS tokens encrypted with AES-256-GCM before DB insertion — key in `POS_ENCRYPTION_KEY` env var
+- `sync-pos` edge function uses Deno Web Crypto (self-contained) — does NOT import from website lib
+- `getUserFromRequest(req)` in `lib/supabase.ts` — reads Bearer token, verifies via `auth.getUser()`
+- `createAuthenticatedClient(token)` in `lib/supabase.ts` — user-scoped client that respects RLS
+- POS OAuth providers: Square (live), Lightspeed Retail (live), Clover (pending), Toast (deferred)
+- `pages/connections.tsx` — standalone page for POS connect/disconnect, accessible from dashboard hamburger menu
