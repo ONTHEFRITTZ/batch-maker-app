@@ -4,6 +4,7 @@ import {
   Modal, TextInput, Alert, Share, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../contexts/ThemeContext';
 import {
   getEnvironmentalReports,
@@ -74,6 +75,7 @@ function SectionHeader({ title, right }: { title: string; right?: React.ReactNod
 export default function ReportsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
   const [activeTab, setActiveTab] = useState<TabType>('day');
 
@@ -168,9 +170,9 @@ export default function ReportsScreen() {
 
   function handleExport() {
     Alert.alert('Export Reports', 'Choose format', [
-      { text: 'CSV — Batches', onPress: () => handleExportCSV('batch') },
-      { text: 'CSV — Start of Day', onPress: () => handleExportCSV('environmental') },
-      { text: 'CSV — End of Day', onPress: () => handleExportCSV('daily') },
+      { text: 'CSV - Batches', onPress: () => handleExportCSV('batch') },
+      { text: 'CSV - Start of Day', onPress: () => handleExportCSV('environmental') },
+      { text: 'CSV - End of Day', onPress: () => handleExportCSV('daily') },
       { text: 'JSON (Full backup)', onPress: async () => {
         try { await Share.share({ message: exportReportsAsJSON(), title: 'Reports JSON' }); }
         catch { Alert.alert('Error', 'Failed to export'); }
@@ -213,7 +215,9 @@ export default function ReportsScreen() {
   const primary = colors.primary;
 
   return (
-    <View style={[styles.root, { backgroundColor: bg }]}>
+    // paddingTop uses the safe area inset so the header clears the camera
+    // punch-hole on Pixel devices and notches on all phones.
+    <View style={[styles.root, { backgroundColor: bg, paddingTop: insets.top }]}>
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <View style={[styles.header, { backgroundColor: surface, borderBottomColor: border }]}>
@@ -236,7 +240,7 @@ export default function ReportsScreen() {
 
       {/* ── Tab bar ────────────────────────────────────────────────────── */}
       <View style={[styles.tabBar, { backgroundColor: surface, borderBottomColor: border }]}>
-        {([['day', '📅 Day Reports'], ['batches', '🧺 Batches']] as [TabType, string][]).map(([tab, label]) => (
+        {([['day', 'Day Reports'], ['batches', 'Batches']] as [TabType, string][]).map(([tab, label]) => (
           <TouchableOpacity
             key={tab}
             style={[styles.tab, activeTab === tab && { borderBottomColor: primary, borderBottomWidth: 3 }]}
@@ -261,7 +265,7 @@ export default function ReportsScreen() {
               <View style={styles.todayRow}>
                 <View style={styles.todayItem}>
                   <Text style={[styles.todayStatus, { color: todaySod ? colors.success : colors.error }]}>
-                    {todaySod ? '✓ Done' : '— None'}
+                    {todaySod ? 'Done' : 'None'}
                   </Text>
                   <Text style={[styles.todayItemLabel, { color: sub }]}>Start of Day</Text>
                 </View>
@@ -272,7 +276,7 @@ export default function ReportsScreen() {
                       ? activeWorkday ? colors.warning : colors.success
                       : colors.error,
                   }]}>
-                    {todayDaily ? (activeWorkday ? '⏳ Open' : '✓ Done') : '— None'}
+                    {todayDaily ? (activeWorkday ? 'Open' : 'Done') : 'None'}
                   </Text>
                   <Text style={[styles.todayItemLabel, { color: sub }]}>End of Day</Text>
                 </View>
@@ -316,8 +320,8 @@ export default function ReportsScreen() {
                       </Text>
                       {(r.ambientTemp !== undefined || r.humidity !== undefined) && (
                         <Text style={[styles.reportCardMeta, { color: sub }]}>
-                          {r.ambientTemp !== undefined ? `🌡 ${r.ambientTemp}°C  ` : ''}
-                          {r.humidity !== undefined ? `💧 ${r.humidity}%` : ''}
+                          {r.ambientTemp !== undefined ? `${r.ambientTemp}C  ` : ''}
+                          {r.humidity !== undefined ? `${r.humidity}%` : ''}
                         </Text>
                       )}
                     </View>
@@ -380,7 +384,7 @@ export default function ReportsScreen() {
                 style={[styles.searchInput, { backgroundColor: bg, color: text, borderColor: border }]}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
-                placeholder="Search batches…"
+                placeholder="Search batches..."
                 placeholderTextColor={sub}
                 clearButtonMode="while-editing"
               />
@@ -460,8 +464,7 @@ export default function ReportsScreen() {
           onPress={() => setGenerateModalOpen(false)}
         >
           <View
-            style={[styles.generateSheet, { backgroundColor: surface }]}
-            // Prevent touches inside sheet closing the modal
+            style={[styles.generateSheet, { backgroundColor: surface, paddingBottom: insets.bottom + 16 }]}
             onStartShouldSetResponder={() => true}
           >
             <Text style={[styles.generateSheetTitle, { color: text }]}>Generate Report</Text>
@@ -506,7 +509,7 @@ export default function ReportsScreen() {
                   {activeWorkday
                     ? 'Close out today\'s workday'
                     : todayDaily
-                    ? `Already done today`
+                    ? 'Already done today'
                     : 'Summarise batches, costs, and output'}
                 </Text>
               </View>
@@ -535,9 +538,13 @@ export default function ReportsScreen() {
         onRequestClose={() => setSelectedSod(null)}
       >
         <View style={[styles.detailModal, { backgroundColor: bg }]}>
-          <View style={[styles.detailHeader, { backgroundColor: surface, borderBottomColor: border }]}>
+          <View style={[styles.detailHeader, {
+            backgroundColor: surface,
+            borderBottomColor: border,
+            paddingTop: insets.top + 14,
+          }]}>
             <TouchableOpacity onPress={() => setSelectedSod(null)}>
-              <Text style={[styles.detailBack, { color: primary }]}>‹ Back</Text>
+              <Text style={[styles.detailBack, { color: primary }]}>Back</Text>
             </TouchableOpacity>
             <Text style={[styles.detailTitle, { color: text }]}>Start of Day</Text>
             <TouchableOpacity onPress={() => {
@@ -564,13 +571,13 @@ export default function ReportsScreen() {
                 <View style={styles.detailRow}>
                   <Text style={[styles.detailLabel, { color: sub }]}>Temperature</Text>
                   <Text style={[styles.detailValue, { color: text }]}>
-                    {selectedSod.ambientTemp !== undefined ? `${selectedSod.ambientTemp}°C` : '—'}
+                    {selectedSod.ambientTemp !== undefined ? `${selectedSod.ambientTemp}C` : '-'}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
                   <Text style={[styles.detailLabel, { color: sub }]}>Humidity</Text>
                   <Text style={[styles.detailValue, { color: text }]}>
-                    {selectedSod.humidity !== undefined ? `${selectedSod.humidity}%` : '—'}
+                    {selectedSod.humidity !== undefined ? `${selectedSod.humidity}%` : '-'}
                   </Text>
                 </View>
               </View>
@@ -589,7 +596,7 @@ export default function ReportsScreen() {
                   router.push({ pathname: '/screens/EnvironmentalReportScreen', params: { editId: selectedSod?.id } });
                 }}
               >
-                <Text style={[styles.detailEditBtnText, { color: primary }]}>✏️ Edit This Report</Text>
+                <Text style={[styles.detailEditBtnText, { color: primary }]}>Edit This Report</Text>
               </TouchableOpacity>
             </ScrollView>
           )}
@@ -604,9 +611,13 @@ export default function ReportsScreen() {
         onRequestClose={() => setSelectedDaily(null)}
       >
         <View style={[styles.detailModal, { backgroundColor: bg }]}>
-          <View style={[styles.detailHeader, { backgroundColor: surface, borderBottomColor: border }]}>
+          <View style={[styles.detailHeader, {
+            backgroundColor: surface,
+            borderBottomColor: border,
+            paddingTop: insets.top + 14,
+          }]}>
             <TouchableOpacity onPress={() => setSelectedDaily(null)}>
-              <Text style={[styles.detailBack, { color: primary }]}>‹ Back</Text>
+              <Text style={[styles.detailBack, { color: primary }]}>Back</Text>
             </TouchableOpacity>
             <Text style={[styles.detailTitle, { color: text }]}>End of Day</Text>
             <TouchableOpacity onPress={() => {
@@ -628,7 +639,7 @@ export default function ReportsScreen() {
               <View style={styles.pillRow}>
                 <StatPill label="Batches" value={selectedDaily.totalBatches ?? 0} />
                 <StatPill label="Avg Duration"
-                  value={selectedDaily.averageDuration ? formatDuration(selectedDaily.averageDuration) : '—'} />
+                  value={selectedDaily.averageDuration ? formatDuration(selectedDaily.averageDuration) : '-'} />
               </View>
 
               {Object.keys(selectedDaily.batchesByWorkflow ?? {}).length > 0 && (
@@ -649,7 +660,7 @@ export default function ReportsScreen() {
                   style={[styles.detailTextArea, { color: text, borderColor: border, backgroundColor: bg }]}
                   value={editNotes}
                   onChangeText={setEditNotes}
-                  placeholder="Add notes…"
+                  placeholder="Add notes..."
                   placeholderTextColor={sub}
                   multiline
                   numberOfLines={4}
@@ -659,8 +670,6 @@ export default function ReportsScreen() {
               <TouchableOpacity
                 style={[styles.detailSaveBtn, { backgroundColor: primary }]}
                 onPress={() => {
-                  // Persist notes update — your reports service should expose an update fn
-                  // updateDailyReport(selectedDaily.id, { notes: editNotes });
                   setSelectedDaily(null);
                   load();
                 }}
@@ -680,9 +689,13 @@ export default function ReportsScreen() {
         onRequestClose={() => setSelectedBatch(null)}
       >
         <View style={[styles.detailModal, { backgroundColor: bg }]}>
-          <View style={[styles.detailHeader, { backgroundColor: surface, borderBottomColor: border }]}>
+          <View style={[styles.detailHeader, {
+            backgroundColor: surface,
+            borderBottomColor: border,
+            paddingTop: insets.top + 14,
+          }]}>
             <TouchableOpacity onPress={() => setSelectedBatch(null)}>
-              <Text style={[styles.detailBack, { color: primary }]}>‹ Back</Text>
+              <Text style={[styles.detailBack, { color: primary }]}>Back</Text>
             </TouchableOpacity>
             <Text style={[styles.detailTitle, { color: text }]} numberOfLines={1}>
               {(selectedBatch as any)?.batchName || 'Batch'}
@@ -704,7 +717,7 @@ export default function ReportsScreen() {
               {(selectedBatch as any).wasted && (
                 <View style={[styles.wastedBanner, { backgroundColor: '#fce4ec' }]}>
                   <Text style={[styles.wastedBannerText, { color: '#c62828' }]}>
-                    ⚠ Wasted
+                    Wasted
                     {(selectedBatch as any).wastedAtStepName
                       ? ` at "${(selectedBatch as any).wastedAtStepName}"`
                       : ''}
@@ -849,7 +862,7 @@ const styles = StyleSheet.create({
   },
   generateSheet: {
     borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    padding: 24, paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    padding: 24,
   },
   generateSheetTitle: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
   generateSheetSub: { fontSize: 14, marginBottom: 20 },
@@ -876,7 +889,7 @@ const styles = StyleSheet.create({
   detailModal: { flex: 1 },
   detailHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1,
+    paddingHorizontal: 16, paddingBottom: 14, borderBottomWidth: 1,
   },
   detailBack: { fontSize: 16, fontWeight: '600', minWidth: 60 },
   detailTitle: { fontSize: 17, fontWeight: '700', flex: 1, textAlign: 'center' },

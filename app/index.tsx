@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import {
   Alert,
   Image,
+  Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -23,7 +24,8 @@ import { supabase } from "../lib/supabase";
 import { SyncStatusBar } from "../app/components/SyncStatusBar";
 import { useConnectionStatus } from "../hooks/useConnectionStatus";
 import { useAppInit } from "../hooks/useAppInit";
-import { registerPushToken } from "../utils/pushNotifications";  // ← ADDED
+import { registerPushToken } from "../utils/pushNotifications";
+import OrderScannerScreen from "./screens/OrderScannerScreen";
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -32,6 +34,11 @@ export default function HomeScreen() {
 
   const { initState } = useAppInit();
   const connection = useConnectionStatus();
+
+  // ── Orders scanner state ───────────────────────────────────────────────────
+  const [scannerVisible, setScannerVisible] = useState(false);
+  const [scannerLocationId, setScannerLocationId] = useState('');
+  const [scannerLocationName, setScannerLocationName] = useState('');
 
   // ── Auth state ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -95,7 +102,7 @@ export default function HomeScreen() {
           if (error) { Alert.alert("Sign In Error", error.message); return; }
 
           // ── Register push token now that we have a valid session ───────────
-          await registerPushToken(access_token, 'batchmaker-app');  // ← ADDED
+          await registerPushToken(access_token, 'batchmaker-app');
         }
       }
     } catch (error: any) {
@@ -105,6 +112,47 @@ export default function HomeScreen() {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+  };
+
+  // ── Orders button handler ──────────────────────────────────────────────────
+  const handleOrdersPress = async () => {
+    try {
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser) {
+        Alert.alert("Not signed in", "Please sign in to scan orders.");
+        return;
+      }
+
+      // Fetch active clock-in record
+      const { data: activeEntry } = await supabase
+        .from("time_entries")
+        .select("id, location_id")
+        .eq("user_id", currentUser.id)
+        .is("clock_out", null)
+        .maybeSingle();
+
+      if (!activeEntry) {
+        Alert.alert(
+          "Not Clocked In",
+          "You must be clocked in at a location to scan orders. Orders are recorded against the location you are currently clocked in at."
+        );
+        return;
+      }
+
+      // Resolve location name
+      const { data: locationData } = await supabase
+        .from("locations")
+        .select("name")
+        .eq("id", activeEntry.location_id)
+        .single();
+
+      setScannerLocationId(activeEntry.location_id);
+      setScannerLocationName(locationData?.name || "Unknown Location");
+      setScannerVisible(true);
+
+    } catch (err: any) {
+      Alert.alert("Error", err.message || "Failed to open order scanner");
+    }
   };
 
   // ── Loading splash ─────────────────────────────────────────────────────────
@@ -150,106 +198,143 @@ export default function HomeScreen() {
 
   // ── Main app ───────────────────────────────────────────────────────────────
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <>
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
 
-      <SyncStatusBar connection={connection} />
+        <SyncStatusBar connection={connection} />
 
-      <View style={styles.topBar}>
-        <View style={styles.syncIndicator}>
-          <View style={[
-            styles.syncDot,
-            {
-              backgroundColor:
-                connection.state === 'offline'  ? '#ef4444' :
-                connection.state === 'checking' ? '#f59e0b' :
-                connection.pendingCount > 0     ? '#f59e0b' :
-                                                  '#10b981',
-            }
-          ]} />
-          <Text style={[styles.syncText, { color: colors.textSecondary }]}>
-            {connection.state === 'offline'
-              ? 'Offline'
-              : connection.state === 'checking'
-              ? 'Connecting…'
-              : connection.pendingCount > 0
-              ? `${connection.pendingCount} pending`
-              : connection.lastSyncedAt
-              ? `Synced ${Math.floor((Date.now() - connection.lastSyncedAt.getTime()) / 1000)}s ago`
-              : 'Connected'}
+        <View style={styles.topBar}>
+          <View style={styles.syncIndicator}>
+            <View style={[
+              styles.syncDot,
+              {
+                backgroundColor:
+                  connection.state === 'offline'  ? '#ef4444' :
+                  connection.state === 'checking' ? '#f59e0b' :
+                  connection.pendingCount > 0     ? '#f59e0b' :
+                                                    '#10b981',
+              }
+            ]} />
+            <Text style={[styles.syncText, { color: colors.textSecondary }]}>
+              {connection.state === 'offline'
+                ? 'Offline'
+                : connection.state === 'checking'
+                ? 'Connecting…'
+                : connection.pendingCount > 0
+                ? `${connection.pendingCount} pending`
+                : connection.lastSyncedAt
+                ? `Synced ${Math.floor((Date.now() - connection.lastSyncedAt.getTime()) / 1000)}s ago`
+                : 'Connected'}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={signOut} style={styles.signOutButton}>
+            <Text style={styles.signOutText}>Sign Out</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.header}>
+          <Image
+            source={require("../assets/images/splash-alpha.png")}
+            style={styles.logo}
+            resizeMode="cover"
+          />
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            Digital SOP System
           </Text>
         </View>
-        <TouchableOpacity onPress={signOut} style={styles.signOutButton}>
-          <Text style={styles.signOutText}>Sign Out</Text>
-        </TouchableOpacity>
-      </View>
 
-      <View style={styles.header}>
-        <Image
-          source={require("../assets/images/splash-alpha.png")}
-          style={styles.logo}
-          resizeMode="cover"
-        />
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-          Digital SOP System
-        </Text>
-      </View>
+        <View style={styles.menuContainer}>
+          {user && (
+            <Text style={[styles.email, { color: colors.textSecondary }]}>
+              {user.email}
+              {initState === 'offline' && (
+                <Text style={styles.offlineBadge}> · Offline mode</Text>
+              )}
+            </Text>
+          )}
 
-      <View style={styles.menuContainer}>
-        {user && (
-          <Text style={[styles.email, { color: colors.textSecondary }]}>
-            {user.email}
-            {initState === 'offline' && (
-              <Text style={styles.offlineBadge}> · Offline mode</Text>
+          <TouchableOpacity
+            onPress={() => router.push("/screens/WorkflowSelectScreen")}
+            style={styles.menuButton}
+          >
+            <Text style={styles.menuButtonText}>Start Workflow</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => router.push("/screens/ClockInScreen")}
+            style={[
+              styles.menuButton,
+              connection.state === 'offline' && styles.menuButtonDisabled,
+            ]}
+            disabled={connection.state === 'offline'}
+          >
+            <Text style={[
+              styles.menuButtonText,
+              connection.state === 'offline' && styles.menuButtonTextDisabled,
+            ]}>
+              Clock In/Out
+            </Text>
+            {connection.state === 'offline' && (
+              <Text style={styles.requiresNet}>Requires internet</Text>
             )}
-          </Text>
-        )}
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() => router.push("/screens/WorkflowSelectScreen")}
-          style={styles.menuButton}
-        >
-          <Text style={styles.menuButtonText}>Start Workflow</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => router.push("/screens/ReportsScreen")}
+            style={[
+              styles.menuButton,
+              connection.state === 'offline' && styles.menuButtonDisabled,
+            ]}
+            disabled={connection.state === 'offline'}
+          >
+            <Text style={[
+              styles.menuButtonText,
+              connection.state === 'offline' && styles.menuButtonTextDisabled,
+            ]}>
+              View Reports
+            </Text>
+            {connection.state === 'offline' && (
+              <Text style={styles.requiresNet}>Requires internet</Text>
+            )}
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() => router.push("/screens/ClockInScreen")}
-          style={[
-            styles.menuButton,
-            connection.state === 'offline' && styles.menuButtonDisabled,
-          ]}
-          disabled={connection.state === 'offline'}
-        >
-          <Text style={[
-            styles.menuButtonText,
-            connection.state === 'offline' && styles.menuButtonTextDisabled,
-          ]}>
-            Clock In/Out
-          </Text>
-          {connection.state === 'offline' && (
-            <Text style={styles.requiresNet}>Requires internet</Text>
-          )}
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleOrdersPress}
+            style={[
+              styles.menuButton,
+              connection.state === 'offline' && styles.menuButtonDisabled,
+            ]}
+            disabled={connection.state === 'offline'}
+          >
+            <Text style={[
+              styles.menuButtonText,
+              connection.state === 'offline' && styles.menuButtonTextDisabled,
+            ]}>
+              Orders
+            </Text>
+            {connection.state === 'offline' && (
+              <Text style={styles.requiresNet}>Requires internet</Text>
+            )}
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() => router.push("/screens/ReportsScreen")}
-          style={[
-            styles.menuButton,
-            connection.state === 'offline' && styles.menuButtonDisabled,
-          ]}
-          disabled={connection.state === 'offline'}
-        >
-          <Text style={[
-            styles.menuButtonText,
-            connection.state === 'offline' && styles.menuButtonTextDisabled,
-          ]}>
-            View Reports
-          </Text>
-          {connection.state === 'offline' && (
-            <Text style={styles.requiresNet}>Requires internet</Text>
-          )}
-        </TouchableOpacity>
+        </View>
       </View>
-    </View>
+
+      {/* ── Order Scanner Modal ──────────────────────────────────────────── */}
+      <Modal
+        visible={scannerVisible}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => setScannerVisible(false)}
+      >
+        <OrderScannerScreen
+          locationId={scannerLocationId}
+          locationName={scannerLocationName}
+          onComplete={() => setScannerVisible(false)}
+          onCancel={() => setScannerVisible(false)}
+        />
+      </Modal>
+    </>
   );
 }
 

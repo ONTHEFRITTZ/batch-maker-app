@@ -272,10 +272,9 @@ supabase functions deploy parse-recipe-url
 - [ ] Location locking (GPS clock-in validation)
 - [ ] Drag-to-reorder workflows
 - [ ] App Store + Play Store submission
-- [ ] Privacy policy + Terms of service
 
 ### Post-Launch
-- [ ] POS integration (Square → Toast → Lightspeed → Clover)
+- [ ] POS integration (Square → Lightspeed → Clover)
 - [ ] Predictive batch scheduling (sales trends × par levels)
 - [ ] Inventory analytics (price trends, spend by supplier/category)
 - [ ] QR code batch labels

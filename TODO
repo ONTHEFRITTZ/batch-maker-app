@@ -3,7 +3,7 @@ _Last updated: 2026-02-27_
 
 ---
 
-## 🐛 Bugs — All Fixed ✅
+## Bugs — All Fixed
 
 - [x] Page wipe on action — fixed via `useRef` for `selectedLocationId` in `dashboard.tsx`
 - [x] Archive feature missing from website — fixed in `DashboardWorkflows.tsx`
@@ -20,10 +20,14 @@ _Last updated: 2026-02-27_
 - [x] Cannot delete wasted batches — fixed independently
 - [x] Account/Settings/Directory pages missing background — `dashboard-bg` wrapper added
 - [x] Clock in/out failing — `location_id` + `updated_at` added to `time_entries` insert/update in `DashboardSchedule.tsx`
+- [x] Reports screen header cut off by Android camera punch-hole — `useSafeAreaInsets` applied to `ReportsScreen.tsx`
+- [x] Team status section showing bubble cards instead of list — `DashboardSchedule.tsx` overhauled to compact list rows
+- [x] POS connection error — env vars added to Vercel dashboard; redeploy resolved issue
+- [x] Duplicate sub-tab navigation in Schedule — redundant tab bar removed from inside `DashboardSchedule.tsx`
 
 ---
 
-## 🟠 Pre-Launch — Core Features
+## Pre-Launch — Core Features
 
 ### Account & Access
 - [x] Account tiers — Standard vs premium gated correctly
@@ -32,48 +36,45 @@ _Last updated: 2026-02-27_
 ### Employee & Location
 - [x] Employee directory — Active / On Leave / Terminated on `network_member_roles`
 - [x] Employment status gate — `canClockIn()` blocks terminated/on_leave
-- [ ] **Location locking** — Clock-in only within ~100m of registered address
-  - Food trucks: GPS ping on start-of-day; all staff clock in within ~100m of that ping
-  - Multiple trucks need separate licenses
-  - Implementation: `navigator.geolocation` on clock-in → compare against `locations.lat/lng`
+- [x] Employee selector dropdown on Schedule — dropdown filters calendar, all shifts, and time entries to selected employee; clicking any employee name in the list also filters
+- [x] Clock in / out from dashboard (owner/manager) — Clock In / Clock Out buttons in team panel (both single-employee detail view and inline in all-employees list)
 
 ### Workflows & Batches
 - [ ] **Drag-to-reorder workflows** — Both app and web dashboard
 - [ ] **Workflow caching & public directory** — Cache AI-parsed results; browsable community directory
 - [ ] **Barcode / QR printing (app)** — QR tied to active batch; scan imports at last step
 
-### Reports — App Overhaul ✅
-- [x] **`ReportsScreen.tsx` fully rewritten**
-- [x] **`EnvironmentalReportScreen.tsx` overhauled**
-- [x] **`reports.ts` service updated**
+### Reports — App Overhaul
+- [x] `ReportsScreen.tsx` fully rewritten
+- [x] `EnvironmentalReportScreen.tsx` overhauled
+- [x] `reports.ts` service updated
 
 ---
 
-## 🏗️ Inventory System — Major Upgrade
+## Inventory System — Major Upgrade
 
-### Phase 1 — Database Migration ✅
+### Phase 1 — Database Migration
 - [x] All tables: `suppliers`, `inventory_items`, `location_inventory`, `invoices`, `invoice_line_items`, `inventory_transfers`
 - [x] RLS policies; Supabase Storage bucket `order-scans`
 
-### Phase 2 — Invoice / Packing Slip Scanner (App) ✅
+### Phase 2 — Invoice / Packing Slip Scanner (App)
 - [x] `OrderScannerScreen.tsx`, `api/inventory/scan-order.ts`
 
-### Phase 3 — Supplier Management (Website Dashboard) ✅
+### Phase 3 — Supplier Management (Website Dashboard)
 - [x] `DashboardInventory.tsx` — 4-tab interface: Items, Invoices, Suppliers, Transfers
 
-### Phase 4 — Par Levels & Start of Day Integration ✅ (partial)
+### Phase 4 — Par Levels & Start of Day Integration (partial)
 - [x] `fetchInventoryParSnapshot()`, `InventoryParSnapshot` types, `generateDailyReport()`, EoD detail modal
-- [ ] `StartOfDayReportScreen.tsx` — add inventory section; "Add to order list" button per flagged item
 - [ ] `DashboardOverview.tsx` — low stock alert card
 - [ ] Stamp `last_checked_at` on `par_reset_on_sod = true` items when SoD generated
 
-### Phase 5 — Dashboard Analytics — Inventory 🔲
+### Phase 5 — Dashboard Analytics — Inventory
 - [ ] New "Inventory" tab in `DashboardAnalytics.tsx`
 - [ ] Line chart: price per item over time (flag increases in red)
 - [ ] Bar/pie chart: spend by category; bar chart: spend by supplier
 - [ ] Date range filter + CSV export
 
-### Phase 6 — POS Integration 🔄 IN PROGRESS
+### Phase 6 — POS Integration — IN PROGRESS
 - [x] `migration_pos.sql` — `pos_connections` + `pos_sales` tables with RLS
 - [x] `lib/posEncryption.ts` — AES-256-GCM token encrypt/decrypt (Node.js)
 - [x] `lib/predictiveSchedule.ts` — rolling 4-week avg → suggested batch qty + date
@@ -91,9 +92,10 @@ _Last updated: 2026-02-27_
 - [x] `pages/connections.tsx` — standalone Connections page, linked from dashboard hamburger menu
 - [x] `dashboard.tsx` — Connections link added to hamburger menu
 - [x] `DashboardAnalytics.tsx` — `POSSalesAnalytics` wired into POS sub-tab; `VALID_TABS` updated to include `'pos'`
-- [x] Env vars added to `.env.local`: `POS_ENCRYPTION_KEY`, `SQUARE_CLIENT_ID`, `SQUARE_CLIENT_SECRET`, `LIGHTSPEED_CLIENT_ID`, `LIGHTSPEED_CLIENT_SECRET`, `NEXT_PUBLIC_APP_URL`
+- [x] Env vars added to Vercel dashboard and Supabase secrets: `POS_ENCRYPTION_KEY`, `SQUARE_CLIENT_ID`, `SQUARE_CLIENT_SECRET`, `LIGHTSPEED_CLIENT_ID`, `LIGHTSPEED_CLIENT_SECRET`, `NEXT_PUBLIC_APP_URL`
 - [x] Square OAuth app setup — production credentials configured (developer.squareup.com)
 - [x] Lightspeed OAuth app setup — production credentials configured, redirect URL set
+- [x] POS connection working end to end — confirmed via successful connection after env var fix
 - [ ] **Clover OAuth app setup** — create app at clover.com/developers, get Client ID + Secret, add redirect URL `https://batchmaker.app/api/pos/callback`, add env vars `CLOVER_CLIENT_ID` + `CLOVER_CLIENT_SECRET`
 - [ ] Toast — deferred; requires partner approval process + different auth flow (client_credentials, not OAuth redirect). Revisit post-launch.
 - [ ] Deploy `sync-pos` edge function + set Supabase secrets (`POS_ENCRYPTION_KEY`, provider client IDs/secrets)
@@ -101,7 +103,16 @@ _Last updated: 2026-02-27_
 
 ---
 
-## ✅ Completed Features
+## Completed Features
+
+### DashboardSchedule.tsx
+- [x] Multi-employee shift creation, shift types, Labour Report, schedule templates, bulk delete, printable export
+- [x] Hourly rate, holiday allowance, labour cost report
+- [x] Holiday request workflow — submit in app, approve/decline on website
+- [x] Clock in/out `location_id` + `updated_at` fix
+- [x] Employee selector dropdown — filters calendar, all shifts list, and time entries by selected employee
+- [x] Clock In / Clock Out buttons — available in both single-employee view and inline in team list
+- [x] Duplicate sub-tab navigation removed — top navbar handles navigation only
 
 ### DashboardAnalytics.tsx
 - [x] Batch Reports Viewer — filterable list, expandable rows, live summary bar, CSV export
@@ -113,12 +124,6 @@ _Last updated: 2026-02-27_
 ### DashboardCalendar.tsx
 - [x] Force Delete stuck batches; Mark Done, Hard Delete, Copy Batch, Repeat Batch (recurring weekly)
 - [x] Phase 6 POS suggestions fully integrated
-
-### DashboardSchedule.tsx
-- [x] Multi-employee shift creation, shift types, Labour Report, schedule templates, bulk delete, printable export
-- [x] Hourly rate, holiday allowance, labour cost report
-- [x] Holiday request workflow — submit in app, approve/decline on website
-- [x] Clock in/out `location_id` + `updated_at` fix
 
 ### Employee Directory
 - [x] Status: active / on_leave / terminated; edit modal, location assignment, invite modal, CSV export
@@ -132,37 +137,36 @@ _Last updated: 2026-02-27_
 
 ---
 
-## 🔲 Labour Reports — Remaining
+## Labour Reports — Remaining
 - [ ] Labour report reads `currency_symbol` from location (not hardcoded)
 - [ ] Labour summary display in EoD report UI (service layer done; UI remaining)
 - [ ] Server-side CSV export
 
-## 🔲 Holiday & Absence — Remaining
+## Holiday & Absence — Remaining
 - [ ] Absence calendar overlay across entire team
 
 ---
 
-## 🟡 Post-Launch — Growth Features
+## Post-Launch — Growth Features
 - [ ] POS integration — Clover setup remaining; Toast deferred post-launch
 - [ ] Predictive batch scheduling (requires POS + par levels)
 - [ ] Web embed tool; language packs; QuickBooks integration; Google Calendar sync
 
-## 🔵 Future / Enterprise
+## Future / Enterprise
 - [ ] Customer order tracking; equipment maintenance logs
 - [ ] Role-based permissions (Manager / Supervisor / Operator)
 
-## 🔲 iOS & Play Store Launch
+## iOS & Play Store Launch
 - [ ] App Store + Play Store listings
-- [ ] Privacy policy + Terms of service pages
+- [x] Privacy policy + Terms of service pages
 - [ ] App icon all sizes + splash screen
 - [ ] TestFlight beta + Play internal test track
 - [ ] IAP products in App Store Connect + Play Console
-- [ ] Push notifications (Expo/FCM)
-- [ ] Stripe webhooks hardened for mobile IAP
+- [x] Push notifications (Expo/FCM)
 
 ---
 
-## 🗒️ Architecture Notes
+## Architecture Notes
 - `employment_status` on `network_member_roles` — NOT `profiles`
 - `location_ids` on `network_member_roles`: null/empty = all locations
 - `hourly_rate` and `holiday_allowance` on `network_member_roles`
@@ -187,3 +191,4 @@ _Last updated: 2026-02-27_
 - `createAuthenticatedClient(token)` in `lib/supabase.ts` — user-scoped client that respects RLS
 - POS OAuth providers: Square (live), Lightspeed Retail (live), Clover (pending), Toast (deferred)
 - `pages/connections.tsx` — standalone page for POS connect/disconnect, accessible from dashboard hamburger menu
+- Env vars live in Vercel dashboard (website) and Supabase secrets (edge functions) — `.env.local` is local only and never deployed
