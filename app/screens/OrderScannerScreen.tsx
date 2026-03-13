@@ -5,11 +5,13 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../lib/supabase';
+import * as FileSystem from 'expo-file-system';
 import { useRouter } from 'expo-router';
 
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || '';
+const API_URL = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/+$/, '');
 
 // ── Types ─────────────────────────────────────────────────────────────────
 interface ParsedLineItem {
@@ -21,7 +23,7 @@ interface ParsedLineItem {
   extendedPrice: number | null;
   category: string;
   inventoryId: string | null;
-  received: boolean;  // for backorder toggle
+  received: boolean;
 }
 
 interface ParsedOrder {
@@ -43,7 +45,18 @@ const CATEGORIES = [
   'Cleaning', 'Paper/Supplies', 'Other',
 ];
 
-type Step = 'camera' | 'processing' | 'review' | 'saving';
+type Step = 'camera' | 'processing' | 'supplier' | 'review' | 'saving';
+
+interface Supplier {
+  id: string;
+  name: string;
+}
+
+interface SupplierMatch {
+  type: 'exact' | 'partial' | 'none';
+  matched: Supplier | null;
+  allSuppliers: Supplier[];
+}
 
 interface Props {
   locationId: string;
@@ -62,67 +75,206 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [parsedOrder, setParsedOrder] = useState<ParsedOrder | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isCameraReady, setIsCameraReady] = useState(false);
+
+  // ── Supplier state ──────────────────────────────────────────────────────
+  const [supplierMatch, setSupplierMatch] = useState<SupplierMatch | null>(null);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
+  const [supplierPickerOpen, setSupplierPickerOpen] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState('');
+  const [creatingSupplier, setCreatingSupplier] = useState(false);
+
+  // ── Supplier matching ───────────────────────────────────────────────────
+  function similarity(a: string, b: string): number {
+    const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+    const ca = clean(a);
+    const cb = clean(b);
+    if (!ca || !cb) return 0;
+    if (ca === cb) return 1;
+    if (ca.includes(cb) || cb.includes(ca)) return 0.85;
+    const wordsA = ca.split(/\s+/);
+    const wordsB = cb.split(/\s+/);
+    const shared = wordsA.filter(w => wordsB.some(wb => wb.startsWith(w) || w.startsWith(wb)));
+    return shared.length / Math.max(wordsA.length, wordsB.length);
+  }
+
+  async function fetchAndMatchSupplier(detectedName: string | null): Promise<SupplierMatch> {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return { type: 'none', matched: null, allSuppliers: [] };
+
+    const { data, error } = await supabase
+      .from('suppliers')
+      .select('id, name')
+      .eq('owner_id', session.user.id)
+      .order('name');
+
+    if (error || !data) return { type: 'none', matched: null, allSuppliers: [] };
+
+    const allSuppliers: Supplier[] = data;
+
+    if (!detectedName || detectedName.trim() === '') {
+      return { type: 'none', matched: null, allSuppliers };
+    }
+
+    let bestMatch: Supplier | null = null;
+    let bestScore = 0;
+
+    for (const s of allSuppliers) {
+      const score = similarity(detectedName, s.name);
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = s;
+      }
+    }
+
+    if (bestScore >= 0.85) {
+      return { type: 'exact', matched: bestMatch, allSuppliers };
+    } else if (bestScore >= 0.4) {
+      return { type: 'partial', matched: bestMatch, allSuppliers };
+    } else {
+      return { type: 'none', matched: null, allSuppliers };
+    }
+  }
 
   // ── Camera capture ──────────────────────────────────────────────────────
   async function handleCapture() {
-    if (!cameraRef.current) return;
+    if (!cameraRef.current || !isCameraReady) {
+      console.error('[Camera] not ready — ref:', !!cameraRef.current, 'isCameraReady:', isCameraReady);
+      setErrorMessage('Camera not ready. Please wait a moment and try again.');
+      return;
+    }
 
     try {
       setStep('processing');
       setErrorMessage(null);
 
-      // Take photo
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.8,
         base64: false,
         skipProcessing: false,
       });
 
-      if (!photo) throw new Error('Failed to capture photo');
+      console.log('[Camera] takePictureAsync result:', photo?.uri);
+      if (!photo?.uri) throw new Error('Failed to capture photo');
 
       setCapturedUri(photo.uri);
 
-      // Resize to reduce payload size — Vision API works well at 1600px max
+      const base64 = await imageToBase64(photo.uri);
+      await scanOrder(base64);
+
+    } catch (error: any) {
+      console.error('Capture error:', JSON.stringify(error), error?.message, error?.code);
+      setErrorMessage(error?.message || error?.code || 'Failed to capture image');
+      setStep('camera');
+    }
+  }
+
+  // ── Image picker (upload from device) ──────────────────────────────────
+  async function handlePickImage() {
+    try {
+      const permResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      console.log('[Picker] permission status:', permResult.status, 'granted:', permResult.granted);
+
+      if (!permResult.granted) {
+        Alert.alert(
+          'Permission Required',
+          'Please allow access to your photo library. You may need to enable it in Android Settings > Apps > Batch Maker > Permissions.'
+        );
+        return;
+      }
+
+      console.log('[Picker] launching library...');
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: 'images',
+        allowsEditing: false,
+        quality: 1,
+        base64: false,
+      });
+
+      console.log('[Picker] result canceled:', result.canceled, 'assets:', result.assets?.length);
+
+      if (result.canceled || !result.assets?.[0]) return;
+
+      const picked = result.assets[0];
+      console.log('[Picker] picked uri:', picked.uri, 'type:', picked.type, 'fileSize:', picked.fileSize);
+
+      if (!picked.uri) throw new Error('No URI returned from image picker');
+
+      setStep('processing');
+      setErrorMessage(null);
+      setCapturedUri(picked.uri);
+
+      const base64 = await imageToBase64(picked.uri);
+      await scanOrder(base64);
+
+    } catch (error: any) {
+      const msg = error?.message || error?.code || JSON.stringify(error) || 'Failed to load image';
+      console.error('[Picker] error full:', JSON.stringify(error), msg);
+      setErrorMessage(msg);
+      setStep('camera');
+    }
+  }
+
+  // ── Image → base64 helper ───────────────────────────────────────────────
+  async function imageToBase64(uri: string): Promise<string> {
+    console.log('[imageToBase64] uri:', uri);
+    try {
       const resized = await ImageManipulator.manipulateAsync(
-        photo.uri,
+        uri,
         [{ resize: { width: 1600 } }],
         { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
-
-      if (!resized.base64) throw new Error('Failed to convert image to base64');
-
-      // Send to API — image processed server-side and immediately discarded
-      await scanOrder(resized.base64);
-
-    } catch (error: any) {
-      console.error('Capture error:', error);
-      setErrorMessage(error?.message || 'Failed to capture image');
-      setStep('camera');
+      if (!resized.base64) throw new Error('Manipulator returned no base64');
+      console.log('[imageToBase64] manipulator OK, length:', resized.base64.length);
+      return resized.base64;
+    } catch (manipErr: any) {
+      console.warn('[imageToBase64] manipulator failed, falling back to FileSystem:', manipErr?.message || JSON.stringify(manipErr));
+      const raw = await FileSystem.readAsStringAsync(uri, {
+        encoding: 'base64' as any,
+      });
+      if (!raw) throw new Error('FileSystem returned empty base64');
+      console.log('[imageToBase64] FileSystem fallback OK, length:', raw.length);
+      return raw;
     }
   }
 
   // ── API call ────────────────────────────────────────────────────────────
   async function scanOrder(base64Image: string) {
+    console.log('[scanOrder] starting, API_URL:', API_URL, 'base64 length:', base64Image.length);
+
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error('Not authenticated');
 
-    const response = await fetch(`${API_URL}/api/inventory/scan-order`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ base64Image, locationId }),
-    });
+    console.log('[scanOrder] session OK, posting to:', `${API_URL}/api/inventory/scan-order`);
+
+    let response: Response;
+    try {
+      response = await fetch(`${API_URL}/api/inventory/scan-order`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ base64Image, locationId }),
+      });
+    } catch (fetchErr: any) {
+      console.error('[scanOrder] fetch threw:', JSON.stringify(fetchErr), fetchErr?.message);
+      throw new Error(fetchErr?.message || 'Network request failed — check API_URL and connectivity');
+    }
+
+    console.log('[scanOrder] response status:', response.status);
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(err.error || `Server error ${response.status}`);
+      const errText = await response.text().catch(() => 'no body');
+      console.error('[scanOrder] error response:', errText);
+      throw new Error(`Server error ${response.status}: ${errText}`);
     }
 
     const result = await response.json();
+    console.log('[scanOrder] parsed result keys:', Object.keys(result));
 
-    // Add received:true to each item for backorder toggle
+    if (!result.parsed) throw new Error('API response missing parsed field');
+
     const orderWithReceived: ParsedOrder = {
       ...result.parsed,
       items: result.parsed.items.map((item: any) => ({
@@ -132,7 +284,18 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
     };
 
     setParsedOrder(orderWithReceived);
-    setStep('review');
+
+    const match = await fetchAndMatchSupplier(result.parsed.supplier);
+    setSupplierMatch(match);
+    setNewSupplierName(result.parsed.supplier || '');
+
+    if (match.type === 'exact' && match.matched) {
+      setSelectedSupplierId(match.matched.id);
+    } else {
+      setSelectedSupplierId(null);
+    }
+
+    setStep('supplier');
   }
 
   // ── Update a line item field ────────────────────────────────────────────
@@ -158,12 +321,12 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('Not authenticated');
 
-      // 1. Save order record
       const { data: orderRecord, error: orderError } = await supabase
         .from('orders')
         .insert({
           owner_id: session.user.id,
           location_id: locationId,
+          supplier_id: selectedSupplierId || null,
           order_date: parsedOrder.orderDate || new Date().toISOString().split('T')[0],
           created_by: session.user.id,
           status: 'unpaid',
@@ -180,9 +343,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
       if (orderError) throw orderError;
 
-      // 2. For each line item: find or create inventory_item, save line item, update location_inventory
       for (const item of parsedOrder.items) {
-        // Try to find existing inventory item by name (case-insensitive)
         let inventoryItemId = item.inventoryId;
 
         if (!inventoryItemId) {
@@ -190,13 +351,13 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
             .from('inventory_items')
             .select('id')
             .eq('owner_id', session.user.id)
+            .eq('location_id', locationId)
             .ilike('name', item.name.trim())
             .maybeSingle();
 
           if (existing) {
             inventoryItemId = existing.id;
           } else {
-            // Create new inventory item
             const { data: newItem, error: newItemError } = await supabase
               .from('inventory_items')
               .insert({
@@ -205,6 +366,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
                 category: item.category || 'Other',
                 size: item.size || null,
                 unit: item.unit || null,
+                location_id: locationId,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
               })
@@ -216,7 +378,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
           }
         }
 
-        // Save order line item
         await supabase.from('order_line_items').insert({
           order_id: orderRecord.id,
           inventory_item_id: inventoryItemId,
@@ -231,7 +392,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
           created_at: new Date().toISOString(),
         });
 
-        // Update location_inventory only for received items
         if (item.received && item.quantity > 0) {
           const { data: existing } = await supabase
             .from('location_inventory')
@@ -263,7 +423,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
       }
 
       Alert.alert(
-        '✅ Order Saved',
+        'Order Saved',
         `${parsedOrder.items.filter(i => i.received).length} items added to inventory at ${locationName}.`,
         [{ text: 'Done', onPress: () => onComplete?.() }]
       );
@@ -302,39 +462,55 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
   if (step === 'camera') {
     return (
       <View style={styles.cameraContainer}>
-        <CameraView ref={cameraRef} style={styles.camera} facing="back">
-          {/* Overlay guide */}
-          <View style={styles.cameraOverlay}>
-            <View style={styles.cameraHeader}>
-              <TouchableOpacity onPress={onCancel} style={styles.cancelButton}>
-                <Text style={styles.cancelButtonText}>✕ Cancel</Text>
-              </TouchableOpacity>
-              <Text style={styles.cameraTitle}>Scan Order / Packing Slip</Text>
-              <Text style={styles.locationLabel}>📍 {locationName}</Text>
-            </View>
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing="back"
+          onCameraReady={() => {
+            console.log('[Camera] onCameraReady fired, ref:', !!cameraRef.current);
+            setIsCameraReady(true);
+          }}
+        />
 
-            {/* Guide frame */}
-            <View style={styles.guideFrame}>
-              <View style={[styles.corner, styles.topLeft]} />
-              <View style={[styles.corner, styles.topRight]} />
-              <View style={[styles.corner, styles.bottomLeft]} />
-              <View style={[styles.corner, styles.bottomRight]} />
-            </View>
+        <View style={styles.cameraOverlay}>
+          <View style={styles.cameraHeader}>
+            <TouchableOpacity onPress={onCancel} style={styles.cancelButton}>
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.cameraTitle}>Scan Order / Packing Slip</Text>
+            <Text style={styles.locationLabel}>{locationName}</Text>
+          </View>
 
-            <View style={styles.cameraFooter}>
-              <Text style={styles.cameraHint}>
-                Position the document within the frame
-              </Text>
-              <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
+          <View style={styles.guideFrame}>
+            <View style={[styles.corner, styles.topLeft]} />
+            <View style={[styles.corner, styles.topRight]} />
+            <View style={[styles.corner, styles.bottomLeft]} />
+            <View style={[styles.corner, styles.bottomRight]} />
+          </View>
+
+          <View style={styles.cameraFooter}>
+            <Text style={styles.cameraHint}>
+              Position the document within the frame
+            </Text>
+            <View style={styles.cameraFooterButtons}>
+              <TouchableOpacity
+                style={[styles.captureButton, !isCameraReady && { opacity: 0.4 }]}
+                onPress={handleCapture}
+                disabled={!isCameraReady}
+              >
                 <View style={styles.captureButtonInner} />
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.uploadButton} onPress={handlePickImage}>
+                <Text style={styles.uploadButtonIcon}>Upload</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </CameraView>
+        </View>
 
         {errorMessage && (
           <View style={styles.errorBanner}>
-            <Text style={styles.errorText}>⚠️ {errorMessage}</Text>
+            <Text style={styles.errorText}>{errorMessage}</Text>
           </View>
         )}
       </View>
@@ -366,34 +542,217 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
     );
   }
 
+  // ── Supplier step ───────────────────────────────────────────────────────
+  if (step === 'supplier' && parsedOrder && supplierMatch) {
+
+    async function handleCreateSupplier() {
+      if (!newSupplierName.trim()) return;
+      setCreatingSupplier(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error('Not authenticated');
+
+        const { data: created, error } = await supabase
+          .from('suppliers')
+          .insert({
+            owner_id: session.user.id,
+            name: newSupplierName.trim(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .select('id, name')
+          .single();
+
+        if (error) throw error;
+
+        setSelectedSupplierId(created.id);
+        setSupplierPickerOpen(false);
+        setStep('review');
+      } catch (err: any) {
+        setErrorMessage(err.message || 'Failed to create supplier');
+      } finally {
+        setCreatingSupplier(false);
+      }
+    }
+
+    const detectedName = parsedOrder.supplier;
+
+    return (
+      <View style={styles.supplierContainer}>
+        <View style={styles.supplierHeader}>
+          <Text style={styles.supplierTitle}>Supplier Detected</Text>
+          <Text style={styles.supplierSubtitle}>
+            {detectedName
+              ? `We found "${detectedName}" on this order.`
+              : 'No supplier name was detected on this order.'}
+          </Text>
+        </View>
+
+        {errorMessage && (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorText}>{errorMessage}</Text>
+          </View>
+        )}
+
+        <ScrollView style={{ flex: 1, padding: 16 }} contentContainerStyle={{ paddingBottom: 120 }}>
+
+          {(supplierMatch.type === 'exact' || supplierMatch.type === 'partial') && supplierMatch.matched && (
+            <View style={styles.supplierCard}>
+              <Text style={styles.supplierCardLabel}>
+                {supplierMatch.type === 'exact' ? 'Matched Supplier' : 'Possible Match'}
+              </Text>
+              <TouchableOpacity
+                style={[
+                  styles.supplierOption,
+                  selectedSupplierId === supplierMatch.matched.id && styles.supplierOptionSelected,
+                ]}
+                onPress={() => {
+                  setSelectedSupplierId(supplierMatch.matched!.id);
+                  setSupplierPickerOpen(false);
+                }}
+              >
+                <View style={styles.supplierOptionInner}>
+                  <Text style={styles.supplierOptionName}>{supplierMatch.matched.name}</Text>
+                  {supplierMatch.type === 'partial' && (
+                    <Text style={styles.supplierOptionHint}>Partial match — confirm if correct</Text>
+                  )}
+                </View>
+                {selectedSupplierId === supplierMatch.matched.id && (
+                  <Text style={styles.supplierCheckmark}>✓</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {supplierMatch.type === 'none' && detectedName && (
+            <View style={styles.supplierCard}>
+              <Text style={styles.supplierCardLabel}>New Supplier</Text>
+              <Text style={styles.supplierNewHint}>
+                This supplier is not in your list yet. Save them now?
+              </Text>
+              <TextInput
+                style={styles.supplierInput}
+                value={newSupplierName}
+                onChangeText={setNewSupplierName}
+                placeholder="Supplier name"
+              />
+              <TouchableOpacity
+                style={[styles.supplierCreateButton, creatingSupplier && { opacity: 0.5 }]}
+                onPress={handleCreateSupplier}
+                disabled={creatingSupplier}
+              >
+                <Text style={styles.supplierCreateButtonText}>
+                  {creatingSupplier ? 'Saving...' : 'Save as New Supplier'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <View style={styles.supplierCard}>
+            <TouchableOpacity
+              style={styles.supplierPickerToggle}
+              onPress={() => setSupplierPickerOpen(v => !v)}
+            >
+              <Text style={styles.supplierCardLabel}>
+                {supplierPickerOpen ? 'Hide Supplier List' : 'Choose from Existing Suppliers'}
+              </Text>
+              <Text style={styles.supplierPickerArrow}>{supplierPickerOpen ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+
+            {supplierPickerOpen && (
+              <>
+                {supplierMatch.allSuppliers.length === 0 ? (
+                  <Text style={styles.supplierOptionHint}>No suppliers saved yet.</Text>
+                ) : (
+                  supplierMatch.allSuppliers.map(s => (
+                    <TouchableOpacity
+                      key={s.id}
+                      style={[
+                        styles.supplierOption,
+                        selectedSupplierId === s.id && styles.supplierOptionSelected,
+                      ]}
+                      onPress={() => {
+                        setSelectedSupplierId(s.id);
+                        setSupplierPickerOpen(false);
+                      }}
+                    >
+                      <Text style={styles.supplierOptionName}>{s.name}</Text>
+                      {selectedSupplierId === s.id && (
+                        <Text style={styles.supplierCheckmark}>✓</Text>
+                      )}
+                    </TouchableOpacity>
+                  ))
+                )}
+
+                <View style={{ marginTop: 12 }}>
+                  <Text style={styles.supplierCardLabel}>Or create a new one</Text>
+                  <TextInput
+                    style={styles.supplierInput}
+                    value={newSupplierName}
+                    onChangeText={setNewSupplierName}
+                    placeholder="Supplier name"
+                  />
+                  <TouchableOpacity
+                    style={[styles.supplierCreateButton, creatingSupplier && { opacity: 0.5 }]}
+                    onPress={handleCreateSupplier}
+                    disabled={creatingSupplier}
+                  >
+                    <Text style={styles.supplierCreateButtonText}>
+                      {creatingSupplier ? 'Saving...' : 'Save as New Supplier'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+
+        </ScrollView>
+
+        <View style={styles.bottomBar}>
+          <TouchableOpacity
+            style={styles.cancelBottomButton}
+            onPress={() => { setSelectedSupplierId(null); setStep('review'); }}
+          >
+            <Text style={styles.cancelBottomText}>Skip</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.confirmButton}
+            onPress={() => setStep('review')}
+          >
+            <Text style={styles.confirmButtonText}>
+              {selectedSupplierId ? 'Confirm Supplier' : 'Continue Without Supplier'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   // ── Review screen ───────────────────────────────────────────────────────
   if (step === 'review' && parsedOrder) {
     const receivedCount = parsedOrder.items.filter(i => i.received).length;
 
     return (
       <View style={styles.reviewContainer}>
-        {/* Header */}
         <View style={styles.reviewHeader}>
           <Text style={styles.reviewTitle}>Review Order</Text>
           <Text style={styles.reviewSubtitle}>
             {parsedOrder.items.length} items · {locationName}
           </Text>
           {parsedOrder.supplier && (
-            <Text style={styles.reviewSupplier}>📦 {parsedOrder.supplier}</Text>
+            <Text style={styles.reviewSupplier}>{parsedOrder.supplier}</Text>
           )}
         </View>
 
         {errorMessage && (
           <View style={styles.errorBanner}>
-            <Text style={styles.errorText}>⚠️ {errorMessage}</Text>
+            <Text style={styles.errorText}>{errorMessage}</Text>
           </View>
         )}
 
         <ScrollView style={styles.reviewScroll} contentContainerStyle={{ paddingBottom: 120 }}>
-          {/* Line Items */}
           {parsedOrder.items.map((item, index) => (
             <View key={index} style={[styles.lineItem, !item.received && styles.lineItemBackorder]}>
-              {/* Received toggle */}
               <TouchableOpacity
                 style={styles.receivedToggle}
                 onPress={() => updateItem(index, 'received', !item.received)}
@@ -404,7 +763,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
               </TouchableOpacity>
 
               <View style={styles.lineItemContent}>
-                {/* Name */}
                 <TextInput
                   style={styles.lineItemName}
                   value={item.name}
@@ -412,7 +770,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
                   placeholder="Item name"
                 />
 
-                {/* Size + Category row */}
                 <View style={styles.lineItemRow}>
                   <TextInput
                     style={[styles.lineItemInput, { flex: 1 }]}
@@ -425,7 +782,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
                   </View>
                 </View>
 
-                {/* Qty + Unit + Price row */}
                 <View style={styles.lineItemRow}>
                   <TextInput
                     style={[styles.lineItemInput, { width: 60 }]}
@@ -457,18 +813,16 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
                 </View>
 
                 {!item.received && (
-                  <Text style={styles.backorderLabel}>⚠️ Backordered — not added to inventory</Text>
+                  <Text style={styles.backorderLabel}>Backordered — not added to inventory</Text>
                 )}
               </View>
 
-              {/* Remove button */}
               <TouchableOpacity onPress={() => removeItem(index)} style={styles.removeButton}>
                 <Text style={styles.removeButtonText}>✕</Text>
               </TouchableOpacity>
             </View>
           ))}
 
-          {/* Financials summary */}
           <View style={styles.financials}>
             <Text style={styles.financialsTitle}>Financial Summary</Text>
             {[
@@ -489,23 +843,21 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
             ))}
           </View>
 
-          {/* Rescan option */}
           <TouchableOpacity
             style={styles.rescanButton}
             onPress={() => { setParsedOrder(null); setStep('camera'); }}
           >
-            <Text style={styles.rescanButtonText}>📷 Rescan</Text>
+            <Text style={styles.rescanButtonText}>Rescan</Text>
           </TouchableOpacity>
         </ScrollView>
 
-        {/* Fixed bottom bar */}
         <View style={styles.bottomBar}>
           <TouchableOpacity style={styles.cancelBottomButton} onPress={onCancel}>
             <Text style={styles.cancelBottomText}>Cancel</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.confirmButton} onPress={handleConfirm}>
             <Text style={styles.confirmButtonText}>
-              ✓ Add {receivedCount} Item{receivedCount !== 1 ? 's' : ''} to Inventory
+              Add {receivedCount} Item{receivedCount !== 1 ? 's' : ''} to Inventory
             </Text>
           </TouchableOpacity>
         </View>
@@ -526,8 +878,10 @@ const styles = StyleSheet.create({
 
   // Camera
   cameraContainer: { flex: 1, backgroundColor: '#000' },
-  camera: { flex: 1 },
-  cameraOverlay: { flex: 1, justifyContent: 'space-between' },
+  camera: { ...StyleSheet.absoluteFillObject },
+  cameraOverlay: {
+    flex: 1, justifyContent: 'space-between',
+  },
   cameraHeader: {
     paddingTop: 56, paddingHorizontal: 20, paddingBottom: 16,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -536,10 +890,7 @@ const styles = StyleSheet.create({
   cancelButtonText: { color: '#fff', fontSize: 16 },
   cameraTitle: { color: '#fff', fontSize: 20, fontWeight: '700', textAlign: 'center' },
   locationLabel: { color: '#93c5fd', fontSize: 13, textAlign: 'center', marginTop: 4 },
-  guideFrame: {
-    flex: 1, margin: 32,
-    borderRadius: 8,
-  },
+  guideFrame: { flex: 1, margin: 32, borderRadius: 8 },
   corner: {
     position: 'absolute', width: 28, height: 28,
     borderColor: '#fff', borderWidth: 3,
@@ -554,6 +905,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cameraHint: { color: '#d1d5db', fontSize: 13, marginBottom: 20 },
+  cameraFooterButtons: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    height: 72,
+  },
   captureButton: {
     width: 72, height: 72, borderRadius: 36,
     backgroundColor: 'rgba(255,255,255,0.3)',
@@ -563,15 +921,25 @@ const styles = StyleSheet.create({
   captureButtonInner: {
     width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff',
   },
+  uploadButton: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    width: 72, height: 52, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.6)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  uploadButtonIcon: {
+    color: '#fff', fontSize: 13, fontWeight: '600',
+  },
 
   // Processing
   previewThumb: {
     width: 160, height: 200, borderRadius: 8,
     borderWidth: 1, borderColor: '#e5e7eb',
   },
-  processingTitle: {
-    fontSize: 18, fontWeight: '600', color: '#111827', marginTop: 16,
-  },
+  processingTitle: { fontSize: 18, fontWeight: '600', color: '#111827', marginTop: 16 },
   processingSubtitle: { fontSize: 14, color: '#6b7280', marginTop: 6 },
 
   // Review
@@ -631,17 +999,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#e5e7eb',
   },
   financialsTitle: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 10 },
-  financialRow: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
+  financialRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   financialLabel: { fontSize: 14, color: '#6b7280' },
   financialValue: { fontSize: 14, color: '#111827', fontWeight: '500' },
   financialTotal: { fontWeight: '700', fontSize: 16, color: '#111827' },
 
-  rescanButton: {
-    alignItems: 'center', padding: 12, marginBottom: 8,
-  },
+  rescanButton: { alignItems: 'center', padding: 12, marginBottom: 8 },
   rescanButtonText: { color: '#6b7280', fontSize: 14 },
 
   // Bottom bar
@@ -663,8 +1026,48 @@ const styles = StyleSheet.create({
   },
   confirmButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 
+  // Supplier step
+  supplierContainer: { flex: 1, backgroundColor: '#f9fafb' },
+  supplierHeader: {
+    backgroundColor: '#fff', paddingTop: 56, paddingHorizontal: 20,
+    paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb',
+  },
+  supplierTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
+  supplierSubtitle: { fontSize: 14, color: '#6b7280', marginTop: 4 },
+  supplierCard: {
+    backgroundColor: '#fff', borderRadius: 10, padding: 16,
+    marginBottom: 12, borderWidth: 1, borderColor: '#e5e7eb',
+  },
+  supplierCardLabel: { fontSize: 12, fontWeight: '700', color: '#6b7280', textTransform: 'uppercase', marginBottom: 8 },
+  supplierOption: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#e5e7eb',
+    marginBottom: 6, backgroundColor: '#f9fafb',
+  },
+  supplierOptionSelected: { borderColor: '#16a34a', backgroundColor: '#f0fdf4' },
+  supplierOptionInner: { flex: 1 },
+  supplierOptionName: { fontSize: 15, fontWeight: '600', color: '#111827' },
+  supplierOptionHint: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
+  supplierCheckmark: { color: '#16a34a', fontSize: 18, fontWeight: '700', marginLeft: 8 },
+  supplierNewHint: { fontSize: 13, color: '#374151', marginBottom: 10 },
+  supplierInput: {
+    borderWidth: 1, borderColor: '#d1d5db', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10,
+    fontSize: 15, color: '#111827', backgroundColor: '#fff', marginBottom: 10,
+  },
+  supplierCreateButton: {
+    backgroundColor: '#2563eb', borderRadius: 8,
+    paddingVertical: 12, alignItems: 'center',
+  },
+  supplierCreateButtonText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  supplierPickerToggle: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  supplierPickerArrow: { fontSize: 12, color: '#6b7280' },
+
   // Error
   errorBanner: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: '#fef2f2', borderColor: '#fecaca',
     borderWidth: 1, margin: 12, borderRadius: 8, padding: 10,
   },

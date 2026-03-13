@@ -1,5 +1,5 @@
 # Batch Maker — Master To-Do List
-_Last updated: 2026-02-27_
+_Last updated: 2026-02-28_
 
 ---
 
@@ -24,6 +24,10 @@ _Last updated: 2026-02-27_
 - [x] Team status section showing bubble cards instead of list — `DashboardSchedule.tsx` overhauled to compact list rows
 - [x] POS connection error — env vars added to Vercel dashboard; redeploy resolved issue
 - [x] Duplicate sub-tab navigation in Schedule — redundant tab bar removed from inside `DashboardSchedule.tsx`
+- [x] Inventory tab background shift / layout jump — `html { overflow-y: scroll }` in `globals.css` permanently reserves scrollbar slot
+- [x] Scrollbar visible on page — hidden globally via `scrollbar-width: none` + webkit rules in `globals.css`
+- [x] Header logo/controls not edge-to-edge at 100% zoom — header inner div changed from `max-w-7xl` to `w-full px-6`
+- [x] Sticky notes panel missing container — card wrapper added to `StickyNotes.tsx`
 
 ---
 
@@ -36,18 +40,18 @@ _Last updated: 2026-02-27_
 ### Employee & Location
 - [x] Employee directory — Active / On Leave / Terminated on `network_member_roles`
 - [x] Employment status gate — `canClockIn()` blocks terminated/on_leave
-- [x] Employee selector dropdown on Schedule — dropdown filters calendar, all shifts, and time entries to selected employee; clicking any employee name in the list also filters
-- [x] Clock in / out from dashboard (owner/manager) — Clock In / Clock Out buttons in team panel (both single-employee detail view and inline in all-employees list)
+- [x] Employee selector dropdown on Schedule — dropdown filters calendar, all shifts, and time entries to selected employee
+- [x] Clock in / out from dashboard (owner/manager) — Clock In / Clock Out buttons in team panel
 
 ### Workflows & Batches
 - [ ] **Drag-to-reorder workflows** — Both app and web dashboard
 - [ ] **Workflow caching & public directory** — Cache AI-parsed results; browsable community directory
 - [ ] **Barcode / QR printing (app)** — QR tied to active batch; scan imports at last step
 
-### Reports — App Overhaul
-- [x] `ReportsScreen.tsx` fully rewritten
-- [x] `EnvironmentalReportScreen.tsx` overhauled
-- [x] `reports.ts` service updated
+### Dashboard — Sticky Notes
+- [x] `sticky_notes` Supabase table + RLS migration — `migration_sticky_notes.sql`
+- [x] `StickyNotes.tsx` component — drag-to-reorder, colour picker, expand modal, persist to Supabase
+- [x] Dashboard layout — two-column flex with notes panel on right, `max-w-[1600px]`, hidden below xl breakpoint
 
 ---
 
@@ -69,71 +73,82 @@ _Last updated: 2026-02-27_
 - [ ] Stamp `last_checked_at` on `par_reset_on_sod = true` items when SoD generated
 
 ### Phase 5 — Dashboard Analytics — Inventory
-- [ ] New "Inventory" tab in `DashboardAnalytics.tsx`
+- [x] New "Inventory" tab in `DashboardAnalytics.tsx`
 - [ ] Line chart: price per item over time (flag increases in red)
 - [ ] Bar/pie chart: spend by category; bar chart: spend by supplier
 - [ ] Date range filter + CSV export
 
-### Phase 6 — POS Integration — IN PROGRESS
+### Phase 6 — POS Integration
 - [x] `migration_pos.sql` — `pos_connections` + `pos_sales` tables with RLS
-- [x] `lib/posEncryption.ts` — AES-256-GCM token encrypt/decrypt (Node.js)
+- [x] `lib/posEncryption.ts` — AES-256-GCM token encrypt/decrypt
 - [x] `lib/predictiveSchedule.ts` — rolling 4-week avg → suggested batch qty + date
-- [x] `pages/api/pos/connect.ts` — initiates OAuth redirect for all 4 providers
-- [x] `pages/api/pos/callback.ts` — exchanges code for tokens, encrypts + saves to DB
+- [x] `pages/api/pos/connect.ts` — OAuth redirect for all providers
+- [x] `pages/api/pos/callback.ts` — exchanges code, encrypts + saves to DB
 - [x] `pages/api/pos/disconnect.ts` — deletes connection + purges cached sales
-- [x] `pages/api/pos/connections.ts` — returns connection status (no tokens exposed)
-- [x] `supabase/functions/sync-pos/index.ts` — Deno edge function: daily cron, loops all connections, upserts sales
-- [x] `lib/supabase.ts` — added `getUserFromRequest()`, `createAuthenticatedClient()` exports
-- [x] `lib/dashboard-types.ts` — added `PosConnection` and `PosSale` interfaces
-- [x] `DashboardCalendar.tsx` — Phase 6 patch fully applied (suggestion badges, predictive panel, upcoming demand)
-- [x] `batch-maker-api/tsconfig.json` — removed erroneous cross-project include for `posEncryption.ts`
-- [x] `components/POSConnectionCards.tsx` — Connect/Disconnect UI for all 4 providers
-- [x] `components/POSSalesAnalytics.tsx` — analytics panel: top sellers, slow movers, revenue by DOW
-- [x] `pages/connections.tsx` — standalone Connections page, linked from dashboard hamburger menu
-- [x] `dashboard.tsx` — Connections link added to hamburger menu
-- [x] `DashboardAnalytics.tsx` — `POSSalesAnalytics` wired into POS sub-tab; `VALID_TABS` updated to include `'pos'`
-- [x] Env vars added to Vercel dashboard and Supabase secrets: `POS_ENCRYPTION_KEY`, `SQUARE_CLIENT_ID`, `SQUARE_CLIENT_SECRET`, `LIGHTSPEED_CLIENT_ID`, `LIGHTSPEED_CLIENT_SECRET`, `NEXT_PUBLIC_APP_URL`
-- [x] Square OAuth app setup — production credentials configured (developer.squareup.com)
-- [x] Lightspeed OAuth app setup — production credentials configured, redirect URL set
-- [x] POS connection working end to end — confirmed via successful connection after env var fix
-- [ ] **Clover OAuth app setup** — create app at clover.com/developers, get Client ID + Secret, add redirect URL `https://batchmaker.app/api/pos/callback`, add env vars `CLOVER_CLIENT_ID` + `CLOVER_CLIENT_SECRET`
-- [ ] Toast — deferred; requires partner approval process + different auth flow (client_credentials, not OAuth redirect). Revisit post-launch.
-- [ ] Deploy `sync-pos` edge function + set Supabase secrets (`POS_ENCRYPTION_KEY`, provider client IDs/secrets)
-- [ ] Test Square OAuth flow end to end — connect, confirm LIVE badge, disconnect
+- [x] `pages/api/pos/connections.ts` — returns connection status
+- [x] `supabase/functions/sync-pos/index.ts` — deployed and working
+- [x] `components/POSConnectionCards.tsx` — Connect/Disconnect UI
+- [x] `components/POSSalesAnalytics.tsx` — analytics panel
+- [x] `pages/connections.tsx` — standalone Connections page
+- [x] Square OAuth — live and working end to end
+- [x] Lightspeed OAuth — live and working end to end
+- [x] Env vars — all set in Vercel + Supabase secrets
+- [ ] **Clover** — submitted for approval; waiting on Clover review
+- [ ] **Toast** — see section below
 
 ---
 
-## Completed Features
+## Toast POS Integration — IN PROGRESS
 
-### DashboardSchedule.tsx
-- [x] Multi-employee shift creation, shift types, Labour Report, schedule templates, bulk delete, printable export
-- [x] Hourly rate, holiday allowance, labour cost report
-- [x] Holiday request workflow — submit in app, approve/decline on website
-- [x] Clock in/out `location_id` + `updated_at` fix
-- [x] Employee selector dropdown — filters calendar, all shifts list, and time entries by selected employee
-- [x] Clock In / Clock Out buttons — available in both single-employee view and inline in team list
-- [x] Duplicate sub-tab navigation removed — top navbar handles navigation only
+### Auth model — important, different from Square/Lightspeed
 
-### DashboardAnalytics.tsx
-- [x] Batch Reports Viewer — filterable list, expandable rows, live summary bar, CSV export
-- [x] POS Sales Analytics tab — top sellers, slow movers, revenue by DOW, date range filter
+Toast does not use a standard OAuth redirect flow for third-party apps.
+There are four access tiers:
 
-### DashboardWorkflows.tsx
-- [x] Workflow archive/unarchive; toast notifications; Team Status card
+- **Partner integration** — formal Toast partnership; full read/write; proper OAuth; users connect via Toast Marketplace. Apply at https://doc.toasttab.com/doc/devguide/integrationDevProcess.html
+- **Custom integration** — per-restaurant clientId/clientSecret issued in Toast developer portal. Credentials are per-location, not per user. Best for a single business's own dev team.
+- **Standard API access** — self-service, purchased per location through Toast Shop. Read-only. Credentials created by the restaurant owner in Toast Web.
+- **Analytics API access** — requires Toast Restaurant Management Suite Pro subscription. Read-only sales/labor/menu data. Credentials created in Toast Web.
 
-### DashboardCalendar.tsx
-- [x] Force Delete stuck batches; Mark Done, Hard Delete, Copy Batch, Repeat Batch (recurring weekly)
-- [x] Phase 6 POS suggestions fully integrated
+**For Batch Maker:** We are a third-party app connecting multiple customers' Toast accounts.
+The correct long-term path is a **partner integration**. The short-term unblocked path is
+**custom integration** — each Batch Maker user who uses Toast generates their own
+clientId + clientSecret + restaurantGuid in Toast Web and pastes them into Batch Maker.
+This is the same pattern used by many smaller integrations before partner approval.
 
-### Employee Directory
-- [x] Status: active / on_leave / terminated; edit modal, location assignment, invite modal, CSV export
+### Authentication flow
+```
+POST https://ws-api.toasttab.com/authentication/v1/authentication/login
+Content-Type: application/json
 
-### Backend / API
-- [x] `api/directory/invite.ts` — Resend integration
-- [x] `api/directory/index.ts`, `status.ts`, `canClockIn()`, `timeEntries.ts`
-- [x] SQL migrations: employee_directory, schedule_features, holiday_requests, currency
-- [x] `api/inventory/scan-order.ts` — OCR + AI parsing endpoint
-- [x] `lib/supabase.ts` — `getUserFromRequest()`, `createAuthenticatedClient()` added
+{
+  "clientId": "<clientId>",
+  "clientSecret": "<clientSecret>",
+  "userAccessType": "TOAST_MACHINE_CLIENT"
+}
+```
+Returns `{ token: { tokenType, accessToken, expiresIn } }`.
+Tokens are short-lived — refresh before each sync. All subsequent requests require:
+```
+Authorization: Bearer <accessToken>
+Toast-Restaurant-External-ID: <restaurantGuid>
+```
+
+### Key sales endpoint
+```
+GET https://ws-api.toasttab.com/orders/v2/ordersBulk
+    ?startDate=<ISO>&endDate=<ISO>
+```
+
+### Tasks
+- [ ] Apply for Toast Partner Integration — https://doc.toasttab.com/doc/devguide/integrationDevProcess.html
+- [ ] `pages/api/pos/toast-connect.ts` — accepts `clientId`, `clientSecret`, `restaurantGuid` from user; fetches token; encrypts + stores all three in `pos_connections`
+- [ ] `pages/api/pos/toast-refresh.ts` — re-authenticates with stored credentials before expiry
+- [ ] Update `POSConnectionCards.tsx` — Toast card shows a form for clientId / clientSecret / restaurantGuid with a link to the Toast Web guide
+- [ ] Add Toast sync branch to `supabase/functions/sync-pos/index.ts` — re-auth, call orders API, upsert into `pos_sales`
+- [ ] Confirm `pos_connections.provider` column accepts `'toast'` (add migration if enum-constrained)
+- [ ] Add env vars if moving to partner flow: `TOAST_CLIENT_ID`, `TOAST_CLIENT_SECRET`
+- [ ] Test with Toast sandbox — https://doc.toasttab.com/doc/devguide/apiEnvironments.html
 
 ---
 
@@ -148,19 +163,17 @@ _Last updated: 2026-02-27_
 ---
 
 ## Post-Launch — Growth Features
-- [ ] POS integration — Clover setup remaining; Toast deferred post-launch
-- [ ] Predictive batch scheduling (requires POS + par levels)
-- [ ] Web embed tool; language packs; QuickBooks integration; Google Calendar sync
+- [ ] Language packs; QuickBooks integration; Google Calendar sync
 
 ## Future / Enterprise
 - [ ] Customer order tracking; equipment maintenance logs
 - [ ] Role-based permissions (Manager / Supervisor / Operator)
 
 ## iOS & Play Store Launch
-- [ ] App Store + Play Store listings
+- [ ] App Store + Play Store listings (in progress — blocked on Xcode / 14-day tester requirement)
 - [x] Privacy policy + Terms of service pages
-- [ ] App icon all sizes + splash screen
-- [ ] TestFlight beta + Play internal test track
+- [ ] App icon all sizes + splash screen (in progress)
+- [ ] TestFlight beta + Play internal test track (blocked — need 14 day tester window)
 - [ ] IAP products in App Store Connect + Play Console
 - [x] Push notifications (Expo/FCM)
 
@@ -180,15 +193,13 @@ _Last updated: 2026-02-27_
 - `inventory_items` are owner-scoped; quantities per-location in `location_inventory`
 - Upsert `location_inventory` on unique `(location_id, inventory_item_id)`
 - Invoice images in Supabase Storage bucket `order-scans`, RLS: owner reads/writes own files
-- Invoice parser and recipe parser are completely separate Claude API calls — different prompts, different files
 - `EnvironmentalReportScreen` accepts `editId` param for in-place editing of SoD reports
-- `reports.ts` exports `updateEnvironmentalReport(id, updates)` and `updateDailyReport(id, updates)`
-- Equipment temps (`fridgeTemp`, `freezerTemp`, `proofTemp`, `ovenTemp`) on `environmental_reports` — DB migration required before deploying new SoD screen
-- `fetchInventoryParSnapshot(userId, locationId?)` in `reports.ts` — called at EoD generation time
 - POS tokens encrypted with AES-256-GCM before DB insertion — key in `POS_ENCRYPTION_KEY` env var
-- `sync-pos` edge function uses Deno Web Crypto (self-contained) — does NOT import from website lib
+- `sync-pos` edge function deployed and working — uses Deno Web Crypto, self-contained
 - `getUserFromRequest(req)` in `lib/supabase.ts` — reads Bearer token, verifies via `auth.getUser()`
-- `createAuthenticatedClient(token)` in `lib/supabase.ts` — user-scoped client that respects RLS
-- POS OAuth providers: Square (live), Lightspeed Retail (live), Clover (pending), Toast (deferred)
-- `pages/connections.tsx` — standalone page for POS connect/disconnect, accessible from dashboard hamburger menu
-- Env vars live in Vercel dashboard (website) and Supabase secrets (edge functions) — `.env.local` is local only and never deployed
+- POS providers: Square (live), Lightspeed (live), Clover (pending approval), Toast (in progress)
+- Toast auth: client_credentials flow per restaurant, not OAuth redirect. Token short-lived — refresh on each sync. Requires `Toast-Restaurant-External-ID` header on all API calls.
+- `pages/connections.tsx` — standalone POS connect/disconnect page, linked from dashboard hamburger menu
+- Env vars: Vercel dashboard (website), Supabase secrets (edge functions), `.env.local` (local dev only — never deployed)
+- `sticky_notes` table: `id`, `user_id`, `content`, `color`, `position`, `created_at`, `updated_at` — RLS owner-only
+- Dashboard layout: `max-w-[1600px]` two-column flex; notes sidebar `w-56`, hidden below `xl` breakpoint, `sticky top-[113px]`
