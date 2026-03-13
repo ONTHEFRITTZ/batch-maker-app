@@ -28,6 +28,11 @@ interface ParsedLineItem {
 
 interface ParsedOrder {
   supplier: string | null;
+  supplierAddress: string | null;
+  supplierPhone: string | null;
+  supplierEmail: string | null;
+  repName: string | null;
+  invoiceNumber: string | null;
   orderDate: string | null;
   items: ParsedLineItem[];
   financials: {
@@ -133,6 +138,42 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
       return { type: 'partial', matched: bestMatch, allSuppliers };
     } else {
       return { type: 'none', matched: null, allSuppliers };
+    }
+  }
+
+  // ── Create supplier — defined at component level so handleConfirm
+  //    always reads the live selectedSupplierId state value ──────────────
+  async function handleCreateSupplier() {
+    if (!newSupplierName.trim()) return;
+    setCreatingSupplier(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Not authenticated');
+
+      const { data: created, error } = await supabase
+        .from('suppliers')
+        .insert({
+          owner_id: session.user.id,
+          name: newSupplierName.trim(),
+          contact_name: parsedOrder?.repName || null,
+          phone: parsedOrder?.supplierPhone || null,
+          email: parsedOrder?.supplierEmail || null,
+          notes: parsedOrder?.supplierAddress || null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select('id, name')
+        .single();
+
+      if (error) throw error;
+
+      setSelectedSupplierId(created.id);
+      setSupplierPickerOpen(false);
+      setStep('review');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to create supplier');
+    } finally {
+      setCreatingSupplier(false);
     }
   }
 
@@ -327,6 +368,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
           owner_id: session.user.id,
           location_id: locationId,
           supplier_id: selectedSupplierId || null,
+          order_number: parsedOrder.invoiceNumber || null,
           order_date: parsedOrder.orderDate || new Date().toISOString().split('T')[0],
           created_by: session.user.id,
           status: 'unpaid',
@@ -544,37 +586,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
   // ── Supplier step ───────────────────────────────────────────────────────
   if (step === 'supplier' && parsedOrder && supplierMatch) {
-
-    async function handleCreateSupplier() {
-      if (!newSupplierName.trim()) return;
-      setCreatingSupplier(true);
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) throw new Error('Not authenticated');
-
-        const { data: created, error } = await supabase
-          .from('suppliers')
-          .insert({
-            owner_id: session.user.id,
-            name: newSupplierName.trim(),
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .select('id, name')
-          .single();
-
-        if (error) throw error;
-
-        setSelectedSupplierId(created.id);
-        setSupplierPickerOpen(false);
-        setStep('review');
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to create supplier');
-      } finally {
-        setCreatingSupplier(false);
-      }
-    }
-
     const detectedName = parsedOrder.supplier;
 
     return (
@@ -586,6 +597,12 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
               ? `We found "${detectedName}" on this order.`
               : 'No supplier name was detected on this order.'}
           </Text>
+          {parsedOrder.invoiceNumber && (
+            <Text style={styles.supplierInvoiceMeta}>Invoice #{parsedOrder.invoiceNumber}</Text>
+          )}
+          {parsedOrder.repName && (
+            <Text style={styles.supplierInvoiceMeta}>Rep: {parsedOrder.repName}</Text>
+          )}
         </View>
 
         {errorMessage && (
@@ -630,6 +647,22 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
               <Text style={styles.supplierNewHint}>
                 This supplier is not in your list yet. Save them now?
               </Text>
+              {(parsedOrder.supplierPhone || parsedOrder.supplierEmail || parsedOrder.supplierAddress || parsedOrder.repName) && (
+                <View style={styles.supplierParsedInfo}>
+                  {parsedOrder.repName && (
+                    <Text style={styles.supplierParsedInfoText}>Rep: {parsedOrder.repName}</Text>
+                  )}
+                  {parsedOrder.supplierPhone && (
+                    <Text style={styles.supplierParsedInfoText}>Phone: {parsedOrder.supplierPhone}</Text>
+                  )}
+                  {parsedOrder.supplierEmail && (
+                    <Text style={styles.supplierParsedInfoText}>Email: {parsedOrder.supplierEmail}</Text>
+                  )}
+                  {parsedOrder.supplierAddress && (
+                    <Text style={styles.supplierParsedInfoText}>Address: {parsedOrder.supplierAddress}</Text>
+                  )}
+                </View>
+              )}
               <TextInput
                 style={styles.supplierInput}
                 value={newSupplierName}
@@ -741,6 +774,12 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
           </Text>
           {parsedOrder.supplier && (
             <Text style={styles.reviewSupplier}>{parsedOrder.supplier}</Text>
+          )}
+          {parsedOrder.invoiceNumber && (
+            <Text style={styles.reviewMeta}>Invoice #{parsedOrder.invoiceNumber}</Text>
+          )}
+          {parsedOrder.repName && (
+            <Text style={styles.reviewMeta}>Rep: {parsedOrder.repName}</Text>
           )}
         </View>
 
@@ -951,6 +990,7 @@ const styles = StyleSheet.create({
   reviewTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
   reviewSubtitle: { fontSize: 14, color: '#6b7280', marginTop: 2 },
   reviewSupplier: { fontSize: 14, color: '#2563eb', marginTop: 4 },
+  reviewMeta: { fontSize: 12, color: '#6b7280', marginTop: 2 },
   reviewScroll: { flex: 1, padding: 16 },
 
   // Line items
@@ -1034,6 +1074,7 @@ const styles = StyleSheet.create({
   },
   supplierTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
   supplierSubtitle: { fontSize: 14, color: '#6b7280', marginTop: 4 },
+  supplierInvoiceMeta: { fontSize: 12, color: '#6b7280', marginTop: 2 },
   supplierCard: {
     backgroundColor: '#fff', borderRadius: 10, padding: 16,
     marginBottom: 12, borderWidth: 1, borderColor: '#e5e7eb',
@@ -1050,6 +1091,11 @@ const styles = StyleSheet.create({
   supplierOptionHint: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
   supplierCheckmark: { color: '#16a34a', fontSize: 18, fontWeight: '700', marginLeft: 8 },
   supplierNewHint: { fontSize: 13, color: '#374151', marginBottom: 10 },
+  supplierParsedInfo: {
+    backgroundColor: '#f0fdf4', borderRadius: 8, padding: 10, marginBottom: 10,
+    borderWidth: 1, borderColor: '#bbf7d0',
+  },
+  supplierParsedInfoText: { fontSize: 12, color: '#166534', marginBottom: 2 },
   supplierInput: {
     borderWidth: 1, borderColor: '#d1d5db', borderRadius: 8,
     paddingHorizontal: 12, paddingVertical: 10,
