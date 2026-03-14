@@ -23,7 +23,7 @@ Create, organize, and execute production workflows with precision timing and ing
 ### 2. Batch Tracking & Execution
 Real-time tracking of production batches with multi-station support.
 
-- **Bake Today Mode** 🟢 — immediate production workflow
+- **Make Today Mode** 🟢 — immediate production workflow
 - **Cold Ferment Mode** 🔵 — multi-day production with overnight rest
 - **Batch Claiming** — station-based ownership; see which station owns which batch
 - **Progress Tracking** — visual completion status per step

@@ -75,7 +75,7 @@ const BatchItem: FC<{
   }
 
   const modeIcon = item.mode === 'bake-today' ? '🟢' : '🔵';
-  const modeText = item.mode === 'bake-today' ? 'Bake Today' : 'Cold Ferment';
+  const modeText = item.mode === 'bake-today' ? 'Make Today' : 'Cold Ferment';
   const flashAnim = React.useRef(new Animated.Value(1)).current;
 
   React.useEffect(() => {
@@ -613,7 +613,7 @@ export const WorkflowSelectScreen: FC = () => {
                   onPress={() => handleCreateBatch('bake-today')}
                 >
                   <Text style={styles.modeButtonIcon}>🟢</Text>
-                  <Text style={[styles.modeButtonText, { color: colors.text }]}>Bake Today</Text>
+                  <Text style={[styles.modeButtonText, { color: colors.text }]}>Make Today</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.modeButton, { backgroundColor: colors.primary + '20', borderColor: colors.primary }]}

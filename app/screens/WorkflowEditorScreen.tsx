@@ -249,7 +249,7 @@ export default function WorkflowEditorScreen() {
                 Bake Timing Options
               </Text>
               <Text style={[styles.helperText, { color: colors.textSecondary, marginTop: 4 }]}>
-                Show "Bake Today" / "Cold Ferment" options when creating batches
+                Show "Make Today" / "Cold Ferment" options when creating batches
               </Text>
             </View>
             <Switch

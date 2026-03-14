@@ -23,7 +23,6 @@ interface ParsedLineItem {
   extendedPrice: number | null;
   category: string;
   inventoryId: string | null;
-  received: boolean;
 }
 
 interface ParsedOrder {
@@ -318,10 +317,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
     const orderWithReceived: ParsedOrder = {
       ...result.parsed,
-      items: result.parsed.items.map((item: any) => ({
-        ...item,
-        received: true,
-      })),
+      items: result.parsed.items.map((item: any) => ({ ...item })),
     };
 
     setParsedOrder(orderWithReceived);
@@ -409,6 +405,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
                 size: item.size || null,
                 unit: item.unit || null,
                 location_id: locationId,
+                supplier_id: selectedSupplierId || null,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
               })
@@ -426,15 +423,15 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
           name: item.name,
           size: item.size,
           quantity: item.quantity,
+          quantity_received: item.quantity,
           unit: item.unit,
           unit_price: item.unitPrice,
           extended_price: item.extendedPrice,
           category: item.category,
-          received: item.received,
           created_at: new Date().toISOString(),
         });
 
-        if (item.received && item.quantity > 0) {
+        if (item.quantity > 0) {
           const { data: existing } = await supabase
             .from('location_inventory')
             .select('id, quantity')
@@ -466,7 +463,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
       Alert.alert(
         'Order Saved',
-        `${parsedOrder.items.filter(i => i.received).length} items added to inventory at ${locationName}.`,
+        `${parsedOrder.items.length} items added to inventory at ${locationName}.`,
         [{ text: 'Done', onPress: () => onComplete?.() }]
       );
 
@@ -763,7 +760,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
   // ── Review screen ───────────────────────────────────────────────────────
   if (step === 'review' && parsedOrder) {
-    const receivedCount = parsedOrder.items.filter(i => i.received).length;
+    const receivedCount = parsedOrder.items.length;
 
     return (
       <View style={styles.reviewContainer}>
@@ -791,15 +788,8 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
         <ScrollView style={styles.reviewScroll} contentContainerStyle={{ paddingBottom: 120 }}>
           {parsedOrder.items.map((item, index) => (
-            <View key={index} style={[styles.lineItem, !item.received && styles.lineItemBackorder]}>
-              <TouchableOpacity
-                style={styles.receivedToggle}
-                onPress={() => updateItem(index, 'received', !item.received)}
-              >
-                <View style={[styles.checkbox, item.received && styles.checkboxChecked]}>
-                  {item.received && <Text style={styles.checkmark}>✓</Text>}
-                </View>
-              </TouchableOpacity>
+            <View key={index} style={styles.lineItem}>
+              <View style={{ width: 22, marginRight: 10 }} />
 
               <View style={styles.lineItemContent}>
                 <TextInput
@@ -850,10 +840,6 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
                     placeholder="Total"
                   />
                 </View>
-
-                {!item.received && (
-                  <Text style={styles.backorderLabel}>Backordered — not added to inventory</Text>
-                )}
               </View>
 
               <TouchableOpacity onPress={() => removeItem(index)} style={styles.removeButton}>
@@ -896,7 +882,7 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
           </TouchableOpacity>
           <TouchableOpacity style={styles.confirmButton} onPress={handleConfirm}>
             <Text style={styles.confirmButtonText}>
-              Add {receivedCount} Item{receivedCount !== 1 ? 's' : ''} to Inventory
+              Save {receivedCount} Item{receivedCount !== 1 ? 's' : ''} to Inventory
             </Text>
           </TouchableOpacity>
         </View>
@@ -1001,15 +987,6 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05, shadowRadius: 2, elevation: 1,
   },
-  lineItemBackorder: { backgroundColor: '#fffbeb', borderColor: '#fde68a' },
-  receivedToggle: { marginRight: 10, paddingTop: 2 },
-  checkbox: {
-    width: 22, height: 22, borderRadius: 4,
-    borderWidth: 2, borderColor: '#d1d5db',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  checkboxChecked: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
-  checkmark: { color: '#fff', fontSize: 13, fontWeight: '700' },
   lineItemContent: { flex: 1 },
   lineItemName: {
     fontSize: 15, fontWeight: '600', color: '#111827',
@@ -1028,7 +1005,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#dbeafe', borderRadius: 12,
   },
   categoryText: { fontSize: 11, color: '#1d4ed8', fontWeight: '600' },
-  backorderLabel: { fontSize: 11, color: '#d97706', marginTop: 2 },
   removeButton: { padding: 6, marginLeft: 4 },
   removeButtonText: { color: '#9ca3af', fontSize: 16 },
 
