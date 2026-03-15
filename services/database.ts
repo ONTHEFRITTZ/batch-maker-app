@@ -647,8 +647,73 @@ export async function wasteBatch(
   });
 }
 
-// Deduct ingredients from inventory for steps 0..upToStepIndex (inclusive).
+// ── Get the location the current user is clocked in at right now ──────────
+async function _getClockedInLocationId(userId: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from('time_entries')
+      .select('location_id')
+      .eq('user_id', userId)
+      .is('clock_out', null)
+      .order('clock_in', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return data.location_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Fuzzy match an ingredient string against inventory items ──────────────
+// Returns the best matching inventory item row or null if no match found.
+// Match priority:
+//   1. Exact match on ingredient field (case-insensitive)
+//   2. Exact match on name field (case-insensitive)
+//   3. ingredient field contains search string or vice versa
+//   4. name field contains search string or vice versa
+function _findInventoryItemMatch(
+  ingredientStr: string,
+  inventoryItems: any[]
+): any | null {
+  const search = ingredientStr.toLowerCase().trim();
+  if (!search) return null;
+
+  // Pass 1 — exact match on ingredient field
+  let match = inventoryItems.find(
+    item => item.ingredient && item.ingredient.toLowerCase().trim() === search
+  );
+  if (match) return match;
+
+  // Pass 2 — exact match on name field
+  match = inventoryItems.find(
+    item => item.name && item.name.toLowerCase().trim() === search
+  );
+  if (match) return match;
+
+  // Pass 3 — ingredient field contains search or search contains ingredient
+  match = inventoryItems.find(item => {
+    if (!item.ingredient) return false;
+    const ing = item.ingredient.toLowerCase().trim();
+    return ing.includes(search) || search.includes(ing);
+  });
+  if (match) return match;
+
+  // Pass 4 — name field contains search or search contains name
+  match = inventoryItems.find(item => {
+    if (!item.name) return false;
+    const nm = item.name.toLowerCase().trim();
+    return nm.includes(search) || search.includes(nm);
+  });
+  if (match) return match;
+
+  return null;
+}
+
+// ── Deduct ingredients from location_inventory using FIFO ─────────────────
 // isWaste=true writes 'waste' transactions; false writes 'use' transactions.
+// Returns silently with empty results if user is not clocked in anywhere.
 export async function deductIngredientsForBatch(
   batchId: string,
   workflow: Workflow,
@@ -657,7 +722,14 @@ export async function deductIngredientsForBatch(
   isWaste: boolean = false
 ): Promise<{ deducted: { name: string; amount: number; unit: string }[]; skipped: string[] }> {
   const userId = await getDeviceId();
-  if (!userId) throw new Error('Must be signed in');
+  if (!userId) return { deducted: [], skipped: [] };
+
+  // Only deduct if the user is clocked in at a location
+  const locationId = await _getClockedInLocationId(userId);
+  if (!locationId) {
+    // Not clocked in — personal workflow context, skip deduction silently
+    return { deducted: [], skipped: [] };
+  }
 
   // Collect all ingredients from steps 0..upToStepIndex
   const ingredientsToDeduct: { name: string; amount: number; unit: string }[] = [];
@@ -682,45 +754,91 @@ export async function deductIngredientsForBatch(
     return { deducted: [], skipped: [] };
   }
 
-  // Fetch current inventory from Supabase
+  // Fetch all inventory items for this owner
   const { data: inventoryItems, error: invError } = await supabase
     .from('inventory_items')
-    .select('*')
-    .eq('user_id', userId);
+    .select('id, name, ingredient, unit')
+    .eq('owner_id', userId);
 
-  if (invError) throw new Error('Failed to fetch inventory: ' + invError.message);
+  if (invError) throw new Error('Failed to fetch inventory items: ' + invError.message);
+  if (!inventoryItems?.length) {
+    return { deducted: [], skipped: ingredientsToDeduct.map(i => i.name) };
+  }
+
+  // Fetch location_inventory rows for this location
+  const itemIds = inventoryItems.map((i: any) => i.id);
+  const { data: locInvRows, error: locInvError } = await supabase
+    .from('location_inventory')
+    .select('id, inventory_item_id, quantity')
+    .eq('location_id', locationId)
+    .in('inventory_item_id', itemIds);
+
+  if (locInvError) throw new Error('Failed to fetch location inventory: ' + locInvError.message);
 
   const deducted: { name: string; amount: number; unit: string }[] = [];
   const skipped: string[] = [];
+  const now = new Date().toISOString();
 
   for (const ing of ingredientsToDeduct) {
-    const invItem = (inventoryItems || []).find(
-      (item: any) => item.name.toLowerCase() === ing.name.toLowerCase()
-    );
+    // Find the matching inventory item using fuzzy match
+    const invItem = _findInventoryItemMatch(ing.name, inventoryItems);
 
     if (!invItem) {
       skipped.push(ing.name);
       continue;
     }
 
-    const newQty = Math.max(0, invItem.quantity - ing.amount);
+    // Find the location_inventory row for this item at this location
+    const locInvRow = (locInvRows || []).find(
+      (row: any) => row.inventory_item_id === invItem.id
+    );
 
-    await supabase
-      .from('inventory_items')
-      .update({ quantity: newQty, last_updated: new Date().toISOString() })
-      .eq('id', invItem.id);
+    if (!locInvRow) {
+      // Item exists in master list but has no stock record at this location
+      skipped.push(ing.name);
+      continue;
+    }
 
-    await supabase.from('inventory_transactions').insert({
-      user_id: userId,
-      item_id: invItem.id,
-      type: isWaste ? 'waste' : 'use',
-      quantity: ing.amount,
-      notes: isWaste
-        ? `Wasted in batch: ${batchId} (at step ${upToStepIndex + 1})`
-        : `Used in batch: ${batchId}`,
-      created_by: userId,
-      created_at: new Date().toISOString(),
-    });
+    const currentQty = parseFloat(locInvRow.quantity) || 0;
+    const newQty = Math.max(0, currentQty - ing.amount);
+
+    // Update location_inventory quantity
+    const { error: updateError } = await supabase
+      .from('location_inventory')
+      .update({
+        quantity: newQty,
+        last_updated_by: userId,
+        updated_at: now,
+      })
+      .eq('id', locInvRow.id);
+
+    if (updateError) {
+      console.warn(`[DB] Failed to update location_inventory for ${ing.name}:`, updateError.message);
+      skipped.push(ing.name);
+      continue;
+    }
+
+    // Write inventory transaction
+    const { error: txError } = await supabase
+      .from('inventory_transactions')
+      .insert({
+        user_id: userId,
+        item_id: invItem.id,
+        batch_id: batchId,
+        type: isWaste ? 'waste' : 'use',
+        quantity: ing.amount,
+        notes: isWaste
+          ? `Wasted in batch: ${batchId} (at step ${upToStepIndex + 1})`
+          : `Used in batch: ${batchId}`,
+        created_by: userId,
+        created_at: now,
+        location_id: locationId,
+      });
+
+    if (txError) {
+      // Transaction log failure is non-fatal — stock was already updated
+      console.warn(`[DB] Failed to log inventory transaction for ${ing.name}:`, txError.message);
+    }
 
     deducted.push(ing);
   }
@@ -728,7 +846,9 @@ export async function deductIngredientsForBatch(
   return { deducted, skipped };
 }
 
-// Parse ingredients out of a step — uses structured array or falls back to checklist parsing
+// ── Parse ingredients out of a step ──────────────────────────────────────
+// Uses structured ingredients array if present, otherwise falls back to
+// checklist parsing from the description field.
 function _extractStepIngredients(
   step: Step,
   multiplier: number
@@ -743,6 +863,7 @@ function _extractStepIngredients(
     return results;
   }
 
+  // Fall back to checklist in description
   const checklistMatch = step.description?.match(/📋 Checklist:\n([\s\S]*?)(?=\n\n|$)/);
   if (checklistMatch) {
     const lines = checklistMatch[1]
@@ -758,20 +879,37 @@ function _extractStepIngredients(
   return results;
 }
 
-// Parse "250g flour" or "2 cups sugar" → { name, amount, unit }
+// ── Parse "250g AP Flour" or "2 cups sugar" → { name, amount, unit } ─────
+// Returns null for lines with no recognisable quantity — those are
+// instruction lines, not ingredients, and should not be deducted.
 function _parseIngredientString(
   text: string,
   multiplier: number
 ): { name: string; amount: number; unit: string } | null {
-  const match = text.match(
-    /^(\d+(?:\.\d+)?)\s*(g|kg|ml|l|oz|lb|cup|cups|tbsp|tsp|piece|pieces)?\s+(.+)$/i
+  if (!text) return null;
+
+  // Handles formats like:
+  //   "250g AP Flour"
+  //   "2 cups sugar"
+  //   "1.5 kg chicken breast"
+  //   "500 ml milk"
+  const match = text.trim().match(
+    /^(\d+(?:\.\d+)?)\s*(g|kg|ml|l|oz|lb|cups?|tbsp|tsp|pieces?|ea|cs|bag|box|can|bt)?\s+(.+)$/i
   );
+
   if (!match) return null;
+
   const amount = parseFloat(match[1]) * multiplier;
-  const unit = (match[2] || 'unit').toLowerCase();
+  const unit = match[2] ? match[2].toLowerCase().replace(/s$/, '') : 'unit';
   const name = match[3].trim();
+
   if (!name || amount <= 0) return null;
-  return { name, amount: Math.round(amount * 100) / 100, unit };
+
+  return {
+    name,
+    amount: Math.round(amount * 100) / 100,
+    unit,
+  };
 }
 
 // ============================================

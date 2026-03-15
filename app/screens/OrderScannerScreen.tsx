@@ -381,39 +381,87 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
 
       if (orderError) throw orderError;
 
+      // Track potential duplicates to warn about after saving
+      const potentialDuplicates: { scanned: string; existing: string }[] = [];
+
+      // Fetch all existing inventory items once for duplicate checking
+      const { data: allExistingItems } = await supabase
+        .from('inventory_items')
+        .select('id, name, ingredient')
+        .eq('owner_id', session.user.id)
+        .eq('location_id', locationId);
+
       for (const item of parsedOrder.items) {
         let inventoryItemId = item.inventoryId;
 
         if (!inventoryItemId) {
-          const { data: existing } = await supabase
-            .from('inventory_items')
-            .select('id')
-            .eq('owner_id', session.user.id)
-            .eq('location_id', locationId)
-            .ilike('name', item.name.trim())
-            .maybeSingle();
+          // Pass 1 — exact name match
+          const exactMatch = (allExistingItems || []).find(
+            (e: any) => e.name.toLowerCase().trim() === item.name.toLowerCase().trim()
+          );
 
-          if (existing) {
-            inventoryItemId = existing.id;
+          if (exactMatch) {
+            inventoryItemId = exactMatch.id;
           } else {
-            const { data: newItem, error: newItemError } = await supabase
-              .from('inventory_items')
-              .insert({
-                owner_id: session.user.id,
-                name: item.name.trim(),
-                category: item.category || 'Other',
-                size: item.size || null,
-                unit: item.unit || null,
-                location_id: locationId,
-                supplier_id: selectedSupplierId || null,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              })
-              .select()
-              .single();
+            // Pass 2 — exact ingredient match
+            const ingredientMatch = (allExistingItems || []).find(
+              (e: any) => e.ingredient &&
+                e.ingredient.toLowerCase().trim() === item.name.toLowerCase().trim()
+            );
 
-            if (newItemError) throw newItemError;
-            inventoryItemId = newItem.id;
+            if (ingredientMatch) {
+              inventoryItemId = ingredientMatch.id;
+            } else {
+              // Pass 3 — fuzzy match: check if existing ingredient/name contains
+              // the scanned name or vice versa, with a minimum length guard to
+              // avoid false positives on short words
+              const scannedClean = item.name.toLowerCase().trim();
+              const fuzzyMatch = scannedClean.length >= 4
+                ? (allExistingItems || []).find((e: any) => {
+                    const existingIngredient = (e.ingredient ?? '').toLowerCase().trim();
+                    const existingName = (e.name ?? '').toLowerCase().trim();
+                    return (
+                      (existingIngredient.length >= 4 && (
+                        existingIngredient.includes(scannedClean) ||
+                        scannedClean.includes(existingIngredient)
+                      )) ||
+                      (existingName.length >= 4 && (
+                        existingName.includes(scannedClean) ||
+                        scannedClean.includes(existingName)
+                      ))
+                    );
+                  })
+                : null;
+
+              if (fuzzyMatch) {
+                // Fuzzy match found — flag as potential duplicate but still
+                // create a new item. Owner can merge on the website.
+                potentialDuplicates.push({
+                  scanned: item.name,
+                  existing: fuzzyMatch.ingredient ?? fuzzyMatch.name,
+                });
+              }
+
+              // Create new inventory item regardless of fuzzy match
+              const { data: newItem, error: newItemError } = await supabase
+                .from('inventory_items')
+                .insert({
+                  owner_id: session.user.id,
+                  name: item.name.trim(),
+                  category: item.category || 'Other',
+                  size: item.size || null,
+                  unit: item.unit || null,
+                  location_id: locationId,
+                  supplier_id: selectedSupplierId || null,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                })
+                .select()
+                .single();
+
+              if (newItemError) throw newItemError;
+              inventoryItemId = newItem.id;
+            }
           }
         }
 
@@ -461,9 +509,19 @@ export default function OrderScannerScreen({ locationId, locationName, onComplet
         }
       }
 
+      // Build success message — include duplicate warnings if any were found
+      let message = `${parsedOrder.items.length} items added to inventory at ${locationName}.`;
+      if (potentialDuplicates.length > 0) {
+        message += `\n\nPossible duplicates detected (${potentialDuplicates.length}):\n`;
+        message += potentialDuplicates
+          .map(d => `• "${d.scanned}" may duplicate "${d.existing}"`)
+          .join('\n');
+        message += '\n\nYou can merge duplicates from the Inventory tab on the website.';
+      }
+
       Alert.alert(
-        'Order Saved',
-        `${parsedOrder.items.length} items added to inventory at ${locationName}.`,
+        potentialDuplicates.length > 0 ? 'Order Saved — Review Duplicates' : 'Order Saved',
+        message,
         [{ text: 'Done', onPress: () => onComplete?.() }]
       );
 
