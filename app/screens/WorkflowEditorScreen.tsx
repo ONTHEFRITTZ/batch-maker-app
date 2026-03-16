@@ -20,9 +20,11 @@ export default function WorkflowEditorScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const { workflowId } = useLocalSearchParams<{ workflowId: string }>();
-  
+
   const [workflowName, setWorkflowName] = useState('');
   const [showFermentPrompt, setShowFermentPrompt] = useState(true);
+  const [yieldAmount, setYieldAmount] = useState<string>('');
+  const [yieldUnit, setYieldUnit] = useState<string>('');
   const [steps, setSteps] = useState<StepWithExtras[]>([]);
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -34,7 +36,7 @@ export default function WorkflowEditorScreen() {
   const loadWorkflow = async () => {
     const workflows = await getWorkflows();
     const workflow = workflows.find((w: Workflow) => w.id === workflowId);
-    
+
     if (!workflow) {
       Alert.alert('Error', 'Workflow not found');
       router.back();
@@ -43,26 +45,24 @@ export default function WorkflowEditorScreen() {
 
     setWorkflowName(workflow.name);
     setShowFermentPrompt(workflow.show_ferment_prompt ?? true);
-    
-    // Parse steps and extract all metadata
+    setYieldAmount(workflow.yield_amount != null ? String(workflow.yield_amount) : '');
+    setYieldUnit(workflow.yield_unit ?? '');
+
     const parsedSteps: StepWithExtras[] = workflow.steps.map((step: Step) => {
       let description = step.description;
       let checklistItems: ChecklistItem[] = [];
       let youtubeUrl: string | undefined;
 
-      // Extract checklist
       const checklistMatch = description.match(/📋 Checklist:\n([\s\S]*?)(?=\n\n|$)/);
       if (checklistMatch) {
         const items = checklistMatch[1]
           .split('\n')
           .map((line: string) => line.replace(/^☐\s*/, '').trim())
           .filter(Boolean);
-        
         checklistItems = items.map((text: string) => ({ text }));
         description = description.replace(/📋 Checklist:\n[\s\S]*?(?=\n\n|$)/, '').trim();
       }
 
-      // Extract YouTube URL
       const youtubeMatch = description.match(/🎥 Video:\s*(https?:\/\/[^\s]+)/);
       if (youtubeMatch) {
         youtubeUrl = youtubeMatch[1];
@@ -145,27 +145,23 @@ export default function WorkflowEditorScreen() {
         return;
       }
 
-      // Process steps
       const processedSteps: Step[] = [];
 
       for (let index = 0; index < steps.length; index++) {
         const step = steps[index];
         let description = step.description || '';
-        
-        // Add checklist
+
         if (step.checklistItems && step.checklistItems.length > 0) {
           const checklistText = step.checklistItems
             .filter(item => item.text.trim())
             .map(item => `☐ ${item.text}`)
             .join('\n');
-          
           if (checklistText) {
             if (description) description += '\n\n';
             description += `📋 Checklist:\n${checklistText}`;
           }
         }
 
-        // Add YouTube URL
         if (step.youtubeUrl && step.youtubeUrl.trim()) {
           if (description) description += '\n\n';
           description += `🎥 Video: ${step.youtubeUrl.trim()}`;
@@ -180,30 +176,27 @@ export default function WorkflowEditorScreen() {
         });
       }
 
+      const parsedYieldAmount = yieldAmount.trim() ? parseFloat(yieldAmount) : null;
+
       const updatedWorkflow: Workflow = {
         id: workflowId!,
         name: workflowName,
         steps: processedSteps,
         show_ferment_prompt: showFermentPrompt,
+        yield_amount: parsedYieldAmount,
+        yield_unit: yieldUnit.trim() || null,
       };
 
-      // Update the workflow in the list
       const allWorkflows = await getWorkflows();
-      const updatedWorkflows = allWorkflows.map((w: Workflow) => 
+      const updatedWorkflows = allWorkflows.map((w: Workflow) =>
         w.id === workflowId ? updatedWorkflow : w
       );
-      
-      await setWorkflows(updatedWorkflows);
 
-      // CRITICAL FIX: Force cache refresh
-      console.log('[WorkflowEditor] Forcing cache refresh after save');
+      await setWorkflows(updatedWorkflows);
       await getWorkflows();
 
       Alert.alert('Success', 'Workflow updated!', [
-        {
-          text: 'OK',
-          onPress: () => router.back(),
-        }
+        { text: 'OK', onPress: () => router.back() }
       ]);
     } catch (error) {
       console.error('Error saving workflow:', error);
@@ -224,15 +217,12 @@ export default function WorkflowEditorScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
+
         {/* Workflow Name */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.text }]}>Workflow Name</Text>
           <TextInput
-            style={[styles.input, { 
-              backgroundColor: colors.surface, 
-              color: colors.text,
-              borderColor: colors.border 
-            }]}
+            style={[styles.input, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
             value={workflowName}
             onChangeText={setWorkflowName}
             placeholder="e.g., Custom Bread Recipe"
@@ -241,13 +231,11 @@ export default function WorkflowEditorScreen() {
           />
         </View>
 
-        {/* Show Ferment Prompt Toggle */}
+        {/* Bake Timing Toggle */}
         <View style={styles.section}>
           <View style={styles.toggleRow}>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.sectionLabel, { color: colors.text }]}>
-                Bake Timing Options
-              </Text>
+              <Text style={[styles.sectionLabel, { color: colors.text }]}>Bake Timing Options</Text>
               <Text style={[styles.helperText, { color: colors.textSecondary, marginTop: 4 }]}>
                 Show "Make Today" / "Cold Ferment" options when creating batches
               </Text>
@@ -261,11 +249,43 @@ export default function WorkflowEditorScreen() {
           </View>
         </View>
 
+        {/* Batch Yield */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionLabel, { color: colors.text }]}>Batch Yield</Text>
+          <Text style={[styles.helperText, { color: colors.textSecondary, marginBottom: 12 }]}>
+            How much does one batch produce? Used for production planning.
+          </Text>
+          <View style={styles.yieldRow}>
+            <TextInput
+              style={[styles.yieldInput, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
+              value={yieldAmount}
+              onChangeText={setYieldAmount}
+              placeholder="Amount (e.g. 24)"
+              placeholderTextColor={colors.textSecondary}
+              keyboardType="decimal-pad"
+              editable={!isSaving}
+            />
+            <TextInput
+              style={[styles.yieldInput, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
+              value={yieldUnit}
+              onChangeText={setYieldUnit}
+              placeholder="Unit (e.g. croissants)"
+              placeholderTextColor={colors.textSecondary}
+              editable={!isSaving}
+            />
+          </View>
+          {yieldAmount && yieldUnit ? (
+            <Text style={[styles.yieldPreview, { color: colors.primary }]}>
+              One batch produces {yieldAmount} {yieldUnit}
+            </Text>
+          ) : null}
+        </View>
+
         {/* Steps */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionLabel, { color: colors.text }]}>Steps</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.addButton, { backgroundColor: colors.primary }]}
               onPress={addStep}
               disabled={isSaving}
@@ -275,17 +295,9 @@ export default function WorkflowEditorScreen() {
           </View>
 
           {steps.map((step, stepIndex) => (
-            <View 
-              key={stepIndex}
-              style={[styles.stepCard, { 
-                backgroundColor: colors.surface,
-                borderColor: colors.border 
-              }]}
-            >
+            <View key={stepIndex} style={[styles.stepCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <View style={styles.stepHeader}>
-                <Text style={[styles.stepNumber, { color: colors.primary }]}>
-                  Step {stepIndex + 1}
-                </Text>
+                <Text style={[styles.stepNumber, { color: colors.primary }]}>Step {stepIndex + 1}</Text>
                 {steps.length > 1 && (
                   <TouchableOpacity
                     onPress={() => removeStep(stepIndex)}
@@ -297,15 +309,9 @@ export default function WorkflowEditorScreen() {
                 )}
               </View>
 
-              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>
-                Title *
-              </Text>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Title *</Text>
               <TextInput
-                style={[styles.input, { 
-                  backgroundColor: colors.background, 
-                  color: colors.text,
-                  borderColor: colors.border 
-                }]}
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
                 value={step.title}
                 onChangeText={(text: string) => updateStep(stepIndex, 'title', text)}
                 placeholder="e.g., Mix dry ingredients"
@@ -313,15 +319,9 @@ export default function WorkflowEditorScreen() {
                 editable={!isSaving}
               />
 
-              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>
-                Instructions
-              </Text>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Instructions</Text>
               <TextInput
-                style={[styles.textArea, { 
-                  backgroundColor: colors.background, 
-                  color: colors.text,
-                  borderColor: colors.border 
-                }]}
+                style={[styles.textArea, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
                 value={step.description}
                 onChangeText={(text: string) => updateStep(stepIndex, 'description', text)}
                 placeholder="Add detailed instructions here..."
@@ -331,12 +331,9 @@ export default function WorkflowEditorScreen() {
                 editable={!isSaving}
               />
 
-              {/* Checklist Section */}
               <View style={styles.checklistSection}>
                 <View style={styles.checklistHeader}>
-                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>
-                    Checklist Items
-                  </Text>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Checklist Items</Text>
                   <TouchableOpacity
                     style={[styles.addChecklistButton, { backgroundColor: colors.success }]}
                     onPress={() => addChecklistItem(stepIndex)}
@@ -345,17 +342,12 @@ export default function WorkflowEditorScreen() {
                     <Text style={styles.addChecklistButtonText}>+ Item</Text>
                   </TouchableOpacity>
                 </View>
-
                 {step.checklistItems && step.checklistItems.length > 0 && (
                   <View style={styles.checklistItems}>
                     {step.checklistItems.map((item, itemIndex) => (
                       <View key={itemIndex} style={styles.checklistItemRow}>
                         <TextInput
-                          style={[styles.checklistInput, { 
-                            backgroundColor: colors.background, 
-                            color: colors.text,
-                            borderColor: colors.border 
-                          }]}
+                          style={[styles.checklistInput, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
                           value={item.text}
                           onChangeText={(text: string) => updateChecklistItem(stepIndex, itemIndex, text)}
                           placeholder="e.g., Flour: 500g"
@@ -375,15 +367,9 @@ export default function WorkflowEditorScreen() {
                 )}
               </View>
 
-              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>
-                Timer (minutes)
-              </Text>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Timer (minutes)</Text>
               <TextInput
-                style={[styles.input, { 
-                  backgroundColor: colors.background, 
-                  color: colors.text,
-                  borderColor: colors.border 
-                }]}
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
                 value={step.timerMinutes?.toString() || ''}
                 onChangeText={(text: string) => {
                   const num = parseInt(text);
@@ -395,16 +381,9 @@ export default function WorkflowEditorScreen() {
                 editable={!isSaving}
               />
 
-              {/* YouTube Video URL */}
-              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>
-                YouTube Video URL (optional)
-              </Text>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>YouTube Video URL (optional)</Text>
               <TextInput
-                style={[styles.input, { 
-                  backgroundColor: colors.background, 
-                  color: colors.text,
-                  borderColor: colors.border 
-                }]}
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
                 value={step.youtubeUrl || ''}
                 onChangeText={(text: string) => updateStep(stepIndex, 'youtubeUrl', text)}
                 placeholder="https://youtube.com/watch?v=..."
@@ -415,18 +394,14 @@ export default function WorkflowEditorScreen() {
               />
 
               <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-                💡 Tip: Add ingredient amounts like "Flour: 500g" for batch scaling
+                Tip: Add ingredient amounts like "Flour: 500g" for batch scaling
               </Text>
             </View>
           ))}
         </View>
       </ScrollView>
 
-      {/* Bottom Action Bar */}
-      <View style={[styles.actionBar, { 
-        backgroundColor: colors.surface,
-        borderTopColor: colors.border 
-      }]}>
+      <View style={[styles.actionBar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
         <TouchableOpacity
           style={[styles.cancelButton, { backgroundColor: colors.surfaceVariant }]}
           onPress={() => router.back()}
@@ -436,15 +411,12 @@ export default function WorkflowEditorScreen() {
             {isSaving ? 'Saving...' : 'Cancel'}
           </Text>
         </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.saveButton, { backgroundColor: colors.primary }, isSaving && { opacity: 0.6 }]}
           onPress={saveWorkflow}
           disabled={isSaving}
         >
-          <Text style={styles.saveButtonText}>
-            {isSaving ? '⏳ Saving...' : 'Save Changes'}
-          </Text>
+          <Text style={styles.saveButtonText}>{isSaving ? 'Saving...' : 'Save Changes'}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -459,12 +431,10 @@ const styles = StyleSheet.create({
   section: { marginBottom: 24 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sectionLabel: { fontSize: 18, fontWeight: 'bold', marginBottom: 12 },
-  toggleRow: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    gap: 16,
-    marginBottom: 8
-  },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 8 },
+  yieldRow: { flexDirection: 'row', gap: 12, marginBottom: 8 },
+  yieldInput: { flex: 1, borderWidth: 1, borderRadius: 8, padding: 12, fontSize: 16 },
+  yieldPreview: { fontSize: 12, fontStyle: 'italic', marginTop: 4 },
   addButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
   addButtonText: { color: 'white', fontSize: 14, fontWeight: '600' },
   input: { borderWidth: 1, borderRadius: 8, padding: 12, fontSize: 16, marginBottom: 16 },

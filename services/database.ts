@@ -41,6 +41,8 @@ export interface Workflow {
   archived?: boolean;
   archived_at?: string;
   show_ferment_prompt?: boolean;
+  yield_amount?: number | null;
+  yield_unit?: string | null;
 }
 
 export interface Timer {
@@ -251,6 +253,8 @@ export async function setWorkflows(newWorkflows: Workflow[]): Promise<void> {
         archived: workflow.archived || false,
         archived_at: workflow.archived_at || null,
         show_ferment_prompt: workflow.show_ferment_prompt ?? true,
+        yield_amount: workflow.yield_amount ?? null,
+        yield_unit: workflow.yield_unit ?? null,
         updated_at: new Date().toISOString(),
       });
       if (error) throw error;
@@ -276,6 +280,8 @@ export async function addWorkflow(newWorkflow: Workflow): Promise<void> {
       archived: newWorkflow.archived || false,
       archived_at: newWorkflow.archived_at || null,
       show_ferment_prompt: newWorkflow.show_ferment_prompt ?? true,
+      yield_amount: newWorkflow.yield_amount ?? null,
+      yield_unit: newWorkflow.yield_unit ?? null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
