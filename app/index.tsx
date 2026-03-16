@@ -253,70 +253,85 @@ export default function HomeScreen() {
             </Text>
           )}
 
-          <TouchableOpacity
-            onPress={() => router.push("/screens/WorkflowSelectScreen")}
-            style={styles.menuButton}
-          >
-            <Text style={styles.menuButtonText}>Start Workflow</Text>
-          </TouchableOpacity>
+          {/* ── 2x2 tile grid ── */}
+          <View style={styles.tileGrid}>
 
-          <TouchableOpacity
-            onPress={() => router.push("/screens/ClockInScreen")}
-            style={[
-              styles.menuButton,
-              connection.state === 'offline' && styles.menuButtonDisabled,
-            ]}
-            disabled={connection.state === 'offline'}
-          >
-            <Text style={[
-              styles.menuButtonText,
-              connection.state === 'offline' && styles.menuButtonTextDisabled,
-            ]}>
-              Clock In/Out
-            </Text>
-            {connection.state === 'offline' && (
-              <Text style={styles.requiresNet}>Requires internet</Text>
-            )}
-          </TouchableOpacity>
+            {/* My Workflows */}
+            <TouchableOpacity
+              onPress={() => router.push("/screens/WorkflowSelectScreen")}
+              style={[styles.tile, { backgroundColor: colors.surface ?? "#ffffff", borderColor: "#e5e7eb" }]}
+            >
+              <Text style={styles.tileIcon}></Text>
+              <Text style={[styles.tileLabel, { color: colors.text ?? "#1f2937" }]}>My Workflows</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => router.push("/screens/ReportsScreen")}
-            style={[
-              styles.menuButton,
-              connection.state === 'offline' && styles.menuButtonDisabled,
-            ]}
-            disabled={connection.state === 'offline'}
-          >
-            <Text style={[
-              styles.menuButtonText,
-              connection.state === 'offline' && styles.menuButtonTextDisabled,
-            ]}>
-              View Reports
-            </Text>
-            {connection.state === 'offline' && (
-              <Text style={styles.requiresNet}>Requires internet</Text>
-            )}
-          </TouchableOpacity>
+            {/* Clock In/Out */}
+            <TouchableOpacity
+              onPress={() => router.push("/screens/ClockInScreen")}
+              style={[
+                styles.tile,
+                { backgroundColor: colors.surface ?? "#ffffff", borderColor: "#e5e7eb" },
+                connection.state === 'offline' && styles.tileDisabled,
+              ]}
+              disabled={connection.state === 'offline'}
+            >
+              <Text style={styles.tileIcon}></Text>
+              <Text style={[
+                styles.tileLabel,
+                { color: connection.state === 'offline' ? "#9ca3af" : (colors.text ?? "#1f2937") },
+              ]}>
+                Clock In/Out
+              </Text>
+              {connection.state === 'offline' && (
+                <Text style={styles.tileOfflineNote}>Requires internet</Text>
+              )}
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={handleOrdersPress}
-            style={[
-              styles.menuButton,
-              connection.state === 'offline' && styles.menuButtonDisabled,
-            ]}
-            disabled={connection.state === 'offline'}
-          >
-            <Text style={[
-              styles.menuButtonText,
-              connection.state === 'offline' && styles.menuButtonTextDisabled,
-            ]}>
-              Orders
-            </Text>
-            {connection.state === 'offline' && (
-              <Text style={styles.requiresNet}>Requires internet</Text>
-            )}
-          </TouchableOpacity>
+            {/* View Reports */}
+            <TouchableOpacity
+              onPress={() => router.push("/screens/ReportsScreen")}
+              style={[
+                styles.tile,
+                { backgroundColor: colors.surface ?? "#ffffff", borderColor: "#e5e7eb" },
+                connection.state === 'offline' && styles.tileDisabled,
+              ]}
+              disabled={connection.state === 'offline'}
+            >
+              <Text style={styles.tileIcon}></Text>
+              <Text style={[
+                styles.tileLabel,
+                { color: connection.state === 'offline' ? "#9ca3af" : (colors.text ?? "#1f2937") },
+              ]}>
+                Reports
+              </Text>
+              {connection.state === 'offline' && (
+                <Text style={styles.tileOfflineNote}>Requires internet</Text>
+              )}
+            </TouchableOpacity>
 
+            {/* Orders */}
+            <TouchableOpacity
+              onPress={handleOrdersPress}
+              style={[
+                styles.tile,
+                { backgroundColor: colors.surface ?? "#ffffff", borderColor: "#e5e7eb" },
+                connection.state === 'offline' && styles.tileDisabled,
+              ]}
+              disabled={connection.state === 'offline'}
+            >
+              <Text style={styles.tileIcon}></Text>
+              <Text style={[
+                styles.tileLabel,
+                { color: connection.state === 'offline' ? "#9ca3af" : (colors.text ?? "#1f2937") },
+              ]}>
+                Orders
+              </Text>
+              {connection.state === 'offline' && (
+                <Text style={styles.tileOfflineNote}>Requires internet</Text>
+              )}
+            </TouchableOpacity>
+
+          </View>
         </View>
       </View>
 
@@ -421,43 +436,51 @@ const styles = StyleSheet.create({
   },
   email: {
     fontSize: 14,
-    marginBottom: 32,
+    marginBottom: 24,
   },
   offlineBadge: {
     color: '#ef4444',
     fontSize: 12,
   },
-  menuButton: {
+
+  // ── Tile grid ──────────────────────────────────────────────────────────────
+  tileGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
     width: "100%",
-    backgroundColor: "#ffffff",
-    paddingVertical: 18,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    marginBottom: 12,
+    justifyContent: "center",
+  },
+  tile: {
+    width: "47%",
+    aspectRatio: 1,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
     elevation: 1,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 2,
   },
-  menuButtonDisabled: {
+  tileDisabled: {
     opacity: 0.45,
   },
-  menuButtonText: {
-    color: "#1f2937",
-    fontSize: 16,
-    fontWeight: "500",
+  tileIcon: {
+    fontSize: 34,
+    marginBottom: 10,
+  },
+  tileLabel: {
+    fontSize: 15,
+    fontWeight: "600",
     textAlign: "center",
   },
-  menuButtonTextDisabled: {
+  tileOfflineNote: {
+    fontSize: 10,
     color: "#9ca3af",
-  },
-  requiresNet: {
-    fontSize: 11,
-    color: "#9ca3af",
+    marginTop: 4,
     textAlign: "center",
-    marginTop: 2,
   },
 });

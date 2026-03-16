@@ -14,6 +14,7 @@ import BatchTimer from '../components/BatchTimer';
 import YouTubeVideo from '../components/YouTubeVideo';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useVoiceCommands, VoiceCommand } from '../../hooks/useVoiceCommands';
+import { supabase } from '../../lib/supabase';
 
 // Haptic feedback helpers
 const haptics = {
@@ -247,7 +248,7 @@ export const StepScreen: FC = () => {
         deductResult = await deductIngredientsForBatch(
           batchId!,
           workflow,
-          workflow.steps.length - 1, // all steps
+          workflow.steps.length - 1,
           batch.batchSizeMultiplier,
           false
         );
@@ -265,6 +266,70 @@ export const StepScreen: FC = () => {
         actualDuration
       );
 
+      // ── Write task_completions row — fire and forget, never blocks finish ──
+      try {
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        if (currentUser) {
+          const { data: activeEntry } = await supabase
+            .from('time_entries')
+            .select('location_id, owner_id')
+            .eq('user_id', currentUser.id)
+            .is('clock_out', null)
+            .maybeSingle();
+
+          if (activeEntry?.location_id) {
+            const today = new Date().toISOString().split('T')[0];
+            const endISO = new Date().toISOString();
+            const startISO = new Date(batch.createdAt).toISOString();
+            const durationMinutes = Math.round(
+              (new Date(endISO).getTime() - batch.createdAt) / 60000
+            );
+
+            // Check if there is a matching in_progress scheduled_batch for
+            // this workflow today so we can link back to it
+            const { data: scheduledBatch } = await supabase
+              .from('scheduled_batches')
+              .select('id')
+              .eq('workflow_id', workflow.id)
+              .eq('location_id', activeEntry.location_id)
+              .eq('scheduled_date', today)
+              .eq('status', 'in_progress')
+              .maybeSingle();
+
+            await supabase.from('task_completions').insert({
+              owner_id: activeEntry.owner_id,
+              user_id: currentUser.id,
+              location_id: activeEntry.location_id,
+              task_date: today,
+              task_type: 'scheduled_batch',
+              source_id: scheduledBatch?.id ?? batchId,
+              title: batch.name,
+              completion_mode: 'guided',
+              start_time: startISO,
+              end_time: endISO,
+              duration_minutes: durationMinutes,
+              batch_completion_report_id: null,
+              notes: null,
+            });
+
+            // Mark the scheduled batch as completed if we found one
+            if (scheduledBatch?.id) {
+              await supabase
+                .from('scheduled_batches')
+                .update({
+                  status: 'completed',
+                  completed_at: endISO,
+                  updated_at: endISO,
+                })
+                .eq('id', scheduledBatch.id);
+            }
+          }
+        }
+      } catch (taskErr) {
+        // Non-fatal — batch completion is already saved, this is just telemetry
+        console.warn('task_completions write failed (non-fatal):', taskErr);
+      }
+
       haptics.success();
 
       const skippedMsg = deductResult.skipped.length > 0
@@ -272,14 +337,14 @@ export const StepScreen: FC = () => {
         : '';
 
       Alert.alert(
-        'Batch Complete! 🎉',
-        `You've completed ${batch.name}\n\nReport saved!${skippedMsg}`,
+        'Batch Complete',
+        `You have completed ${batch.name}\n\nReport saved!${skippedMsg}`,
         [{ text: 'Done', onPress: () => router.back() }]
       );
     } catch (error) {
       console.error('Error finishing batch:', error);
       haptics.success();
-      Alert.alert('Batch Complete!', `${batch.name} finished.`, [
+      Alert.alert('Batch Complete', `${batch.name} finished.`, [
         { text: 'Done', onPress: () => router.back() }
       ]);
     }
@@ -301,9 +366,9 @@ export const StepScreen: FC = () => {
         deductResult = await deductIngredientsForBatch(
           batchId,
           workflow,
-          currentStepIndex, // only steps executed so far
+          currentStepIndex,
           batch.batchSizeMultiplier,
-          true // isWaste = true → writes 'waste' transactions
+          true
         );
       } catch (invErr) {
         console.warn('Inventory deduction failed (non-fatal):', invErr);
@@ -579,7 +644,7 @@ export const StepScreen: FC = () => {
               ]}
               disabled={!allItemsChecked && checklistItems.length > 0}
             >
-              <Text style={styles.navButtonText}>Finish ✓</Text>
+              <Text style={styles.navButtonText}>Finish</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
@@ -605,7 +670,7 @@ export const StepScreen: FC = () => {
           </View>
         )}
 
-        {/* ── WASTE BUTTON ─────────────────────────────────── */}
+        {/* Waste button */}
         <TouchableOpacity
           onPress={() => {
             haptics.warning();
@@ -615,14 +680,13 @@ export const StepScreen: FC = () => {
           style={[styles.wasteButton, { borderColor: colors.error }]}
         >
           <Text style={[styles.wasteButtonText, { color: colors.error }]}>
-            🗑️ Mark Batch as Wasted
+            Mark Batch as Wasted
           </Text>
         </TouchableOpacity>
-        {/* ─────────────────────────────────────────────────── */}
 
       </ScrollView>
 
-      {/* ── WASTE CONFIRMATION MODAL ──────────────────────── */}
+      {/* Waste Confirmation Modal */}
       <Modal
         visible={wasteModalVisible}
         transparent
@@ -632,7 +696,7 @@ export const StepScreen: FC = () => {
         <View style={styles.wasteModalOverlay}>
           <View style={[styles.wasteModal, { backgroundColor: colors.surface }]}>
             <Text style={[styles.wasteModalTitle, { color: colors.error }]}>
-              🗑️ Mark Batch as Wasted
+              Mark Batch as Wasted
             </Text>
             <Text style={[styles.wasteModalBody, { color: colors.text }]}>
               {batch.name}
@@ -689,7 +753,6 @@ export const StepScreen: FC = () => {
           </View>
         </View>
       </Modal>
-      {/* ─────────────────────────────────────────────────── */}
     </>
   );
 };
@@ -732,10 +795,8 @@ const styles = StyleSheet.create({
   navButtonText: { color: 'white', fontSize: 16, fontWeight: '600' },
   warningContainer: { borderWidth: 1, borderRadius: 8, padding: 12, marginTop: 16 },
   warningText: { fontSize: 14, fontWeight: '600', textAlign: 'center' },
-  // Waste button
   wasteButton: { marginTop: 24, padding: 14, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
   wasteButtonText: { fontSize: 15, fontWeight: '600' },
-  // Waste modal
   wasteModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   wasteModal: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40 },
   wasteModalTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 8 },

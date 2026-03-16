@@ -1,8 +1,8 @@
 import { useRouter, useFocusEffect } from "expo-router";
 import React, { FC, useEffect, useState, useCallback } from "react";
 import {
-  FlatList, Text, View, TouchableOpacity, StyleSheet, Alert,
-  TextInput, Modal, Animated, ScrollView, Switch
+  Text, View, TouchableOpacity, StyleSheet, Alert,
+  TextInput, Modal, Animated, ScrollView, Switch, ActivityIndicator
 } from "react-native";
 import {
   getWorkflows, getBatches, createBatch, duplicateBatch,
@@ -20,6 +20,7 @@ import { supabase } from "../../lib/supabase";
 interface ClockInState {
   isClockedIn: boolean;
   locationId: string | null;
+  locationName: string | null;
 }
 
 async function getClockInState(userId: string): Promise<ClockInState> {
@@ -30,13 +31,41 @@ async function getClockInState(userId: string): Promise<ClockInState> {
     .is('clock_out', null)
     .maybeSingle();
 
-  if (data) {
-    return { isClockedIn: true, locationId: data.location_id };
+  if (data?.location_id) {
+    const { data: loc } = await supabase
+      .from('locations')
+      .select('name')
+      .eq('id', data.location_id)
+      .single();
+    return {
+      isClockedIn: true,
+      locationId: data.location_id,
+      locationName: loc?.name ?? null,
+    };
   }
-  return { isClockedIn: false, locationId: null };
+  return { isClockedIn: false, locationId: null, locationName: null };
 }
 
-// ─── BatchItem (unchanged) ────────────────────────────────────────────────
+// ─── Task board types ──────────────────────────────────────────────────────
+interface ScheduledTask {
+  id: string;
+  name: string;
+  workflowId: string;
+  workflowName: string | null;
+  scheduledTime: string | null;
+  batchSizeMultiplier: number;
+  assignedToName: string | null;
+  notes: string | null;
+}
+
+interface RecurringTask {
+  id: string;
+  title: string;
+  description: string | null;
+  category: string;
+}
+
+// ─── BatchItem ─────────────────────────────────────────────────────────────
 const BatchItem: FC<{
   item: Batch;
   workflows: Workflow[];
@@ -74,7 +103,7 @@ const BatchItem: FC<{
     }
   }
 
-  const modeIcon = item.mode === 'bake-today' ? '🟢' : '🔵';
+  const modeIcon = item.mode === 'bake-today' ? '[green]' : '[blue]';
   const modeText = item.mode === 'bake-today' ? 'Make Today' : 'Cold Ferment';
   const flashAnim = React.useRef(new Animated.Value(1)).current;
 
@@ -179,7 +208,7 @@ const BatchItem: FC<{
   );
 };
 
-// ─── WorkflowItem (unchanged) ─────────────────────────────────────────────
+// ─── WorkflowItem ──────────────────────────────────────────────────────────
 const WorkflowItem: FC<{
   item: Workflow;
   colors: any;
@@ -232,7 +261,7 @@ const WorkflowItem: FC<{
   );
 };
 
-// ─── Main screen ──────────────────────────────────────────────────────────
+// ─── Main screen ───────────────────────────────────────────────────────────
 export const WorkflowSelectScreen: FC = () => {
   const router = useRouter();
   const { colors } = useTheme();
@@ -245,15 +274,32 @@ export const WorkflowSelectScreen: FC = () => {
   const [renameText, setRenameText] = useState("");
   const [showNewBatchModal, setShowNewBatchModal] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
-  const [showMyBatches, setShowMyBatches] = useState(false);
+  const [showMyWorkflows, setShowMyWorkflows] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [displayedWorkflows, setDisplayedWorkflows] = useState<Workflow[]>([]);
   const [batchSizeMultiplier, setBatchSizeMultiplier] = useState(1);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [displayedBatches, setDisplayedBatches] = useState<Batch[]>([]);
+  const [clockInState, setClockInState] = useState<ClockInState>({
+    isClockedIn: false,
+    locationId: null,
+    locationName: null,
+  });
 
-  // ── Clock-in state ──────────────────────────────────────────────────────
-  const [clockInState, setClockInState] = useState<ClockInState>({ isClockedIn: false, locationId: null });
+  // ── Task board state ───────────────────────────────────────────────────────
+  const [taskBoardVisible, setTaskBoardVisible] = useState(false);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [recurringTasks, setRecurringTasks] = useState<RecurringTask[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [claimingTaskId, setClaimingTaskId] = useState<string | null>(null);
+
+  // ── Quick complete state ───────────────────────────────────────────────────
+  const [quickCompleteTask, setQuickCompleteTask] = useState<RecurringTask | null>(null);
+  const [quickCompleteVisible, setQuickCompleteVisible] = useState(false);
+  const [quickStartTime, setQuickStartTime] = useState('');
+  const [quickEndTime, setQuickEndTime] = useState('');
+  const [quickNotes, setQuickNotes] = useState('');
+  const [quickSubmitting, setQuickSubmitting] = useState(false);
 
   // Timer tick
   useEffect(() => {
@@ -274,48 +320,219 @@ export const WorkflowSelectScreen: FC = () => {
     const userId = await getDeviceId();
     if (userId) {
       setCurrentUserId(userId);
-      // Check clock-in state from Supabase
       const clockState = await getClockInState(userId);
       setClockInState(clockState);
     }
-
     const allWorkflows = await getWorkflows();
     setWorkflows(allWorkflows);
     setBatches(getBatches());
   };
 
-  // ── Filter workflows based on clock-in state ────────────────────────────
-  // Rule:
-  //   Not clocked in  → show only personal workflows (location_id = null)
-  //   Clocked in      → show only work workflows (location_id = clocked-in location)
+  // ── Filter workflows based on clock-in state ───────────────────────────────
   useEffect(() => {
     let filtered = workflows;
-
-    // Apply clock-in filter first
     if (clockInState.isClockedIn && clockInState.locationId) {
-      // Clocked in — show work workflows for this location only
       filtered = filtered.filter(w => w.location_id === clockInState.locationId);
     } else {
-      // Not clocked in — show personal workflows only
       filtered = filtered.filter(w => !w.location_id);
     }
-
-    // Then apply archive filter on top
     if (!showArchived) {
       filtered = filtered.filter(w => !w.archived);
     }
-
     setDisplayedWorkflows(filtered);
   }, [showArchived, workflows, clockInState]);
 
-  // Filter batches for "My Batches" tab
+  // ── Filter batches for My Workflows tab ───────────────────────────────────
   useEffect(() => {
-    if (showMyBatches && currentUserId) {
+    if (showMyWorkflows && currentUserId) {
       setDisplayedBatches(batches.filter(b => b.claimed_by === currentUserId));
     } else {
       setDisplayedBatches(batches);
     }
-  }, [showMyBatches, batches, currentUserId]);
+  }, [showMyWorkflows, batches, currentUserId]);
+
+  // ── Helper — get owner_id for a location ──────────────────────────────────
+  async function getOwnerIdForLocation(locationId: string): Promise<string> {
+    const { data } = await supabase
+      .from('locations')
+      .select('user_id')
+      .eq('id', locationId)
+      .single();
+    return data?.user_id ?? '';
+  }
+
+  // ── Load and open task board ───────────────────────────────────────────────
+  async function openTaskBoard() {
+    if (!clockInState.locationId || !currentUserId) {
+      Alert.alert(
+        'Not Clocked In',
+        "You need to be clocked in at a location to view today's tasks."
+      );
+      return;
+    }
+
+    setTasksLoading(true);
+    setTaskBoardVisible(true);
+
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const dayOfWeek = new Date().getDay();
+
+      // Fetch today's scheduled batches for this location
+      const { data: scheduled } = await supabase
+        .from('scheduled_batches')
+        .select('*')
+        .eq('location_id', clockInState.locationId)
+        .eq('scheduled_date', today)
+        .eq('status', 'scheduled')
+        .order('scheduled_time', { ascending: true, nullsFirst: true });
+
+      // Resolve workflow names
+      const allWorkflows = await getWorkflows();
+      const workflowMap: Record<string, string> = {};
+      allWorkflows.forEach(w => { workflowMap[w.id] = w.name; });
+
+      const mappedScheduled: ScheduledTask[] = (scheduled ?? []).map((sb: any) => ({
+        id: sb.id,
+        name: sb.name,
+        workflowId: sb.workflow_id,
+        workflowName: workflowMap[sb.workflow_id] ?? null,
+        scheduledTime: sb.scheduled_time ?? null,
+        batchSizeMultiplier: sb.batch_size_multiplier ?? 1,
+        assignedToName: sb.assigned_to_name ?? null,
+        notes: sb.notes ?? null,
+      }));
+
+      // Fetch recurring tasks for this location and owner
+      const ownerId = await getOwnerIdForLocation(clockInState.locationId);
+      const { data: recurring } = await supabase
+        .from('recurring_tasks')
+        .select('*')
+        .eq('owner_id', ownerId)
+        .eq('active', true)
+        .or(`location_id.is.null,location_id.eq.${clockInState.locationId}`);
+
+      const filteredRecurring: RecurringTask[] = (recurring ?? [])
+        .filter((rt: any) => {
+          if (rt.frequency === 'daily') return true;
+          if (rt.frequency === 'weekly' && rt.days_of_week?.includes(dayOfWeek)) return true;
+          if (rt.frequency === 'specific_days' && rt.days_of_week?.includes(dayOfWeek)) return true;
+          return false;
+        })
+        .map((rt: any) => ({
+          id: rt.id,
+          title: rt.title,
+          description: rt.description ?? null,
+          category: rt.category ?? 'General',
+        }));
+
+      setScheduledTasks(mappedScheduled);
+      setRecurringTasks(filteredRecurring);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to load tasks');
+    } finally {
+      setTasksLoading(false);
+    }
+  }
+
+  // ── Claim a scheduled batch from the task board ────────────────────────────
+  async function handleClaimScheduledTask(task: ScheduledTask) {
+    if (!currentUserId || !clockInState.locationId) return;
+    setClaimingTaskId(task.id);
+    try {
+      const allWorkflows = await getWorkflows();
+      const workflow = allWorkflows.find(w => w.id === task.workflowId);
+      if (!workflow) {
+        Alert.alert('Error', 'Workflow not found. Ask your manager to check the scheduled batch.');
+        return;
+      }
+
+      // Create the batch in local state
+      await createBatch(task.workflowId, 'bake-today', 1, task.batchSizeMultiplier);
+
+      // Mark scheduled batch as in progress
+      await supabase
+        .from('scheduled_batches')
+        .update({ status: 'in_progress', updated_at: new Date().toISOString() })
+        .eq('id', task.id);
+
+      // Write initial task_completions row — end_time updated when batch finishes
+      const ownerId = await getOwnerIdForLocation(clockInState.locationId);
+      const now = new Date().toISOString();
+      await supabase.from('task_completions').insert({
+        owner_id: ownerId,
+        user_id: currentUserId,
+        location_id: clockInState.locationId,
+        task_date: new Date().toISOString().split('T')[0],
+        task_type: 'scheduled_batch',
+        source_id: task.id,
+        title: task.name,
+        completion_mode: 'guided',
+        start_time: now,
+        end_time: now,
+        duration_minutes: 0,
+        notes: null,
+      });
+
+      setTaskBoardVisible(false);
+      await loadData();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to claim task');
+    } finally {
+      setClaimingTaskId(null);
+    }
+  }
+
+  // ── Quick complete a recurring task ────────────────────────────────────────
+  async function handleQuickComplete() {
+    if (!quickCompleteTask || !currentUserId || !clockInState.locationId) return;
+    if (!quickStartTime || !quickEndTime) {
+      Alert.alert('Missing Info', 'Please enter both a start time and an end time.');
+      return;
+    }
+    setQuickSubmitting(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const startISO = new Date(`${today}T${quickStartTime}:00`).toISOString();
+      const endISO = new Date(`${today}T${quickEndTime}:00`).toISOString();
+      const durationMinutes = Math.max(
+        0,
+        Math.round((new Date(endISO).getTime() - new Date(startISO).getTime()) / 60000)
+      );
+      const ownerId = await getOwnerIdForLocation(clockInState.locationId);
+
+      await supabase.from('task_completions').insert({
+        owner_id: ownerId,
+        user_id: currentUserId,
+        location_id: clockInState.locationId,
+        task_date: today,
+        task_type: 'recurring_task',
+        source_id: quickCompleteTask.id,
+        title: quickCompleteTask.title,
+        completion_mode: 'quick',
+        start_time: startISO,
+        end_time: endISO,
+        duration_minutes: durationMinutes,
+        notes: quickNotes.trim() || null,
+      });
+
+      // Remove from list so it shows as done
+      setRecurringTasks(prev => prev.filter(t => t.id !== quickCompleteTask.id));
+      setQuickCompleteVisible(false);
+      setQuickCompleteTask(null);
+      setQuickStartTime('');
+      setQuickEndTime('');
+      setQuickNotes('');
+
+      Alert.alert('Task Complete', `${quickCompleteTask.title} marked as done.`);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to complete task');
+    } finally {
+      setQuickSubmitting(false);
+    }
+  }
+
+  // ── All existing batch/workflow handlers unchanged ─────────────────────────
 
   const handleCreateBatch = async (mode: 'bake-today' | 'cold-ferment') => {
     if (!selectedWorkflow) return;
@@ -426,7 +643,6 @@ export const WorkflowSelectScreen: FC = () => {
     );
   };
 
-  // ── Empty state message based on clock-in ──────────────────────────────
   function getEmptyMessage() {
     if (clockInState.isClockedIn) {
       return { main: 'No workflows at this location', sub: 'Ask your manager to add workflows for this location' };
@@ -436,37 +652,55 @@ export const WorkflowSelectScreen: FC = () => {
 
   const emptyMsg = getEmptyMessage();
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
 
-      {/* ── Clock-in status banner ── */}
+      {/* Clock-in status banner */}
       <View style={[
         styles.clockInBanner,
-        { backgroundColor: clockInState.isClockedIn ? colors.success + '18' : colors.surface,
-          borderBottomColor: clockInState.isClockedIn ? colors.success + '40' : colors.border }
+        {
+          backgroundColor: clockInState.isClockedIn ? colors.success + '18' : colors.surface,
+          borderBottomColor: clockInState.isClockedIn ? colors.success + '40' : colors.border,
+        }
       ]}>
         <Text style={[styles.clockInBannerText, { color: clockInState.isClockedIn ? colors.success : colors.textSecondary }]}>
-          {clockInState.isClockedIn ? '🟢 Clocked in — showing workplace workflows' : '⚪ Not clocked in — showing personal workflows'}
+          {clockInState.isClockedIn
+            ? `Clocked in${clockInState.locationName ? ` at ${clockInState.locationName}` : ''} — showing workplace workflows`
+            : 'Not clocked in — showing personal workflows'}
         </Text>
       </View>
 
+      {/* Tab bar */}
       <View style={[styles.toggleBar, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
         <TouchableOpacity
-          style={[styles.toggleOption, !showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }]}
-          onPress={() => setShowMyBatches(false)}
+          style={[styles.toggleOption, !showMyWorkflows && { borderBottomColor: colors.primary, borderBottomWidth: 3 }]}
+          onPress={() => setShowMyWorkflows(false)}
         >
-          <Text style={[styles.toggleText, { color: !showMyBatches ? colors.primary : colors.textSecondary }]}>
+          <Text style={[styles.toggleText, { color: !showMyWorkflows ? colors.primary : colors.textSecondary }]}>
             All Workflows
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.toggleOption, showMyBatches && { borderBottomColor: colors.primary, borderBottomWidth: 3 }]}
-          onPress={() => setShowMyBatches(true)}
+          style={[styles.toggleOption, showMyWorkflows && { borderBottomColor: colors.primary, borderBottomWidth: 3 }]}
+          onPress={() => setShowMyWorkflows(true)}
         >
-          <Text style={[styles.toggleText, { color: showMyBatches ? colors.primary : colors.textSecondary }]}>
-            My Batches
+          <Text style={[styles.toggleText, { color: showMyWorkflows ? colors.primary : colors.textSecondary }]}>
+            My Workflows
           </Text>
         </TouchableOpacity>
+
+        {/* Tasks button — only shown when clocked in */}
+        {clockInState.isClockedIn && (
+          <TouchableOpacity
+            style={[styles.tasksButton, { borderColor: colors.primary, backgroundColor: colors.primary + '15' }]}
+            onPress={openTaskBoard}
+          >
+            <Text style={[styles.tasksButtonText, { color: colors.primary }]}>Tasks</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView style={{ flex: 1 }}>
@@ -481,7 +715,7 @@ export const WorkflowSelectScreen: FC = () => {
           </View>
         )}
 
-        {!showMyBatches && (
+        {!showMyWorkflows && (
           <View style={styles.section}>
             <View style={styles.sectionTitleRow}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Start New Batch</Text>
@@ -545,7 +779,7 @@ export const WorkflowSelectScreen: FC = () => {
           </View>
         )}
 
-        {showMyBatches && displayedBatches.length === 0 && (
+        {showMyWorkflows && displayedBatches.length === 0 && (
           <View style={styles.emptyState}>
             <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No claimed batches</Text>
             <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
@@ -555,6 +789,7 @@ export const WorkflowSelectScreen: FC = () => {
         )}
       </ScrollView>
 
+      {/* Settings FAB */}
       <TouchableOpacity
         style={[styles.settingsButton, { backgroundColor: colors.primary }]}
         onPress={() => setSettingsVisible(true)}
@@ -570,6 +805,7 @@ export const WorkflowSelectScreen: FC = () => {
         onWorkflowsUpdated={loadData}
       />
 
+      {/* ── Create New Batch Modal (unchanged) ── */}
       <Modal
         visible={showNewBatchModal}
         transparent
@@ -612,14 +848,12 @@ export const WorkflowSelectScreen: FC = () => {
                   style={[styles.modeButton, { backgroundColor: colors.success + '20', borderColor: colors.success }]}
                   onPress={() => handleCreateBatch('bake-today')}
                 >
-                  <Text style={styles.modeButtonIcon}>🟢</Text>
                   <Text style={[styles.modeButtonText, { color: colors.text }]}>Make Today</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.modeButton, { backgroundColor: colors.primary + '20', borderColor: colors.primary }]}
                   onPress={() => handleCreateBatch('cold-ferment')}
                 >
-                  <Text style={styles.modeButtonIcon}>🔵</Text>
                   <Text style={[styles.modeButtonText, { color: colors.text }]}>Cold Ferment</Text>
                 </TouchableOpacity>
               </>
@@ -643,6 +877,247 @@ export const WorkflowSelectScreen: FC = () => {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* ── Task Board Bottom Sheet ── */}
+      <Modal
+        visible={taskBoardVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setTaskBoardVisible(false)}
+      >
+        <View style={styles.taskBoardOverlay}>
+          <View style={[styles.taskBoardSheet, { backgroundColor: colors.background }]}>
+
+            {/* Header */}
+            <View style={[styles.taskBoardHeader, { borderBottomColor: colors.border }]}>
+              <View>
+                <Text style={[styles.taskBoardTitle, { color: colors.text }]}>Today's Tasks</Text>
+                {clockInState.locationName && (
+                  <Text style={[styles.taskBoardSubtitle, { color: colors.textSecondary }]}>
+                    {clockInState.locationName}
+                  </Text>
+                )}
+              </View>
+              <TouchableOpacity
+                onPress={() => setTaskBoardVisible(false)}
+                style={[styles.taskBoardCloseButton, { backgroundColor: colors.surface }]}
+              >
+                <Text style={[styles.taskBoardCloseText, { color: colors.textSecondary }]}>X</Text>
+              </TouchableOpacity>
+            </View>
+
+            {tasksLoading ? (
+              <View style={styles.taskBoardLoading}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={[styles.taskBoardLoadingText, { color: colors.textSecondary }]}>
+                  Loading tasks...
+                </Text>
+              </View>
+            ) : (
+              <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+
+                {/* Scheduled batches */}
+                {scheduledTasks.length > 0 && (
+                  <View style={styles.taskSection}>
+                    <Text style={[styles.taskSectionLabel, { color: colors.textSecondary }]}>
+                      SCHEDULED BATCHES
+                    </Text>
+                    {scheduledTasks.map(task => (
+                      <View
+                        key={task.id}
+                        style={[
+                          styles.taskCard,
+                          { backgroundColor: colors.surface, borderLeftColor: '#0d9488' },
+                        ]}
+                      >
+                        <View style={styles.taskCardContent}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.taskCardTitle, { color: colors.text }]}>
+                              {task.name}
+                            </Text>
+                            {task.workflowName && task.workflowName !== task.name && (
+                              <Text style={[styles.taskCardMeta, { color: colors.textSecondary }]}>
+                                {task.workflowName}
+                              </Text>
+                            )}
+                            {task.scheduledTime && (
+                              <Text style={[styles.taskCardMeta, { color: colors.textSecondary }]}>
+                                {task.scheduledTime.slice(0, 5)}
+                              </Text>
+                            )}
+                            {task.batchSizeMultiplier !== 1 && (
+                              <Text style={[styles.taskCardMeta, { color: colors.textSecondary }]}>
+                                {task.batchSizeMultiplier}x batch
+                              </Text>
+                            )}
+                            {task.notes && (
+                              <Text style={[styles.taskCardMeta, { color: colors.textSecondary, fontStyle: 'italic' }]}>
+                                {task.notes}
+                              </Text>
+                            )}
+                          </View>
+                          <TouchableOpacity
+                            style={[styles.taskActionButton, { backgroundColor: '#0d9488' }]}
+                            onPress={() => handleClaimScheduledTask(task)}
+                            disabled={claimingTaskId === task.id}
+                          >
+                            {claimingTaskId === task.id
+                              ? <ActivityIndicator size="small" color="#fff" />
+                              : <Text style={styles.taskActionButtonText}>Start</Text>
+                            }
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Recurring tasks */}
+                {recurringTasks.length > 0 && (
+                  <View style={styles.taskSection}>
+                    <Text style={[styles.taskSectionLabel, { color: colors.textSecondary }]}>
+                      RECURRING TASKS
+                    </Text>
+                    {recurringTasks.map(task => (
+                      <View
+                        key={task.id}
+                        style={[
+                          styles.taskCard,
+                          { backgroundColor: colors.surface, borderLeftColor: '#0891b2' },
+                        ]}
+                      >
+                        <View style={styles.taskCardContent}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.taskCardTitle, { color: colors.text }]}>
+                              {task.title}
+                            </Text>
+                            {task.category !== 'General' && (
+                              <Text style={[styles.taskCardMeta, { color: colors.textSecondary }]}>
+                                {task.category}
+                              </Text>
+                            )}
+                            {task.description && (
+                              <Text style={[styles.taskCardMeta, { color: colors.textSecondary }]}>
+                                {task.description}
+                              </Text>
+                            )}
+                          </View>
+                          <TouchableOpacity
+                            style={[styles.taskActionButton, { backgroundColor: '#0891b2' }]}
+                            onPress={() => {
+                              const now = new Date();
+                              const hh = now.getHours().toString().padStart(2, '0');
+                              const mm = now.getMinutes().toString().padStart(2, '0');
+                              setQuickStartTime(`${hh}:${mm}`);
+                              setQuickEndTime(`${hh}:${mm}`);
+                              setQuickNotes('');
+                              setQuickCompleteTask(task);
+                              setQuickCompleteVisible(true);
+                            }}
+                          >
+                            <Text style={styles.taskActionButtonText}>Done</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {scheduledTasks.length === 0 && recurringTasks.length === 0 && (
+                  <View style={styles.taskBoardEmpty}>
+                    <Text style={[styles.taskBoardEmptyText, { color: colors.textSecondary }]}>
+                      No tasks scheduled for today at this location.
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Quick Complete Modal ── */}
+      <Modal
+        visible={quickCompleteVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!quickSubmitting) setQuickCompleteVisible(false); }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.quickCompleteModal, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.quickCompleteTitle, { color: colors.text }]}>
+              Quick Complete
+            </Text>
+            {quickCompleteTask && (
+              <Text style={[styles.quickCompleteSubtitle, { color: colors.textSecondary }]}>
+                {quickCompleteTask.title}
+              </Text>
+            )}
+
+            <Text style={[styles.quickCompleteLabel, { color: colors.text }]}>Start Time (HH:MM)</Text>
+            <TextInput
+              style={[styles.quickCompleteInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+              value={quickStartTime}
+              onChangeText={setQuickStartTime}
+              placeholder="09:00"
+              placeholderTextColor={colors.textSecondary}
+              keyboardType="numbers-and-punctuation"
+              editable={!quickSubmitting}
+            />
+
+            <Text style={[styles.quickCompleteLabel, { color: colors.text }]}>End Time (HH:MM)</Text>
+            <TextInput
+              style={[styles.quickCompleteInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+              value={quickEndTime}
+              onChangeText={setQuickEndTime}
+              placeholder="09:30"
+              placeholderTextColor={colors.textSecondary}
+              keyboardType="numbers-and-punctuation"
+              editable={!quickSubmitting}
+            />
+
+            <Text style={[styles.quickCompleteLabel, { color: colors.text }]}>Notes (optional)</Text>
+            <TextInput
+              style={[
+                styles.quickCompleteInput,
+                styles.quickCompleteTextArea,
+                { color: colors.text, borderColor: colors.border, backgroundColor: colors.background },
+              ]}
+              value={quickNotes}
+              onChangeText={setQuickNotes}
+              placeholder="Any notes..."
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              numberOfLines={3}
+              editable={!quickSubmitting}
+            />
+
+            <View style={styles.quickCompleteButtons}>
+              <TouchableOpacity
+                style={[styles.quickCompleteCancelButton, { borderColor: colors.border }]}
+                onPress={() => setQuickCompleteVisible(false)}
+                disabled={quickSubmitting}
+              >
+                <Text style={[styles.quickCompleteCancelText, { color: colors.textSecondary }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.quickCompleteConfirmButton,
+                  { backgroundColor: quickSubmitting ? colors.disabled : '#0891b2' },
+                ]}
+                onPress={handleQuickComplete}
+                disabled={quickSubmitting}
+              >
+                {quickSubmitting
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.quickCompleteConfirmText}>Mark Done</Text>
+                }
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 };
@@ -651,9 +1126,17 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   clockInBanner: { paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: 1 },
   clockInBannerText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
-  toggleBar: { flexDirection: 'row', borderBottomWidth: 1 },
+  toggleBar: { flexDirection: 'row', borderBottomWidth: 1, alignItems: 'center' },
   toggleOption: { flex: 1, paddingVertical: 16, alignItems: 'center' },
   toggleText: { fontSize: 16, fontWeight: '600' },
+  tasksButton: {
+    marginRight: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1.5,
+  },
+  tasksButtonText: { fontSize: 13, fontWeight: '700' },
   section: { marginBottom: 24 },
   sectionTitle: { fontSize: 22, fontWeight: 'bold', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 },
   sectionTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 },
@@ -693,11 +1176,44 @@ const styles = StyleSheet.create({
   sizeButton: { flex: 1, padding: 12, borderRadius: 8, borderWidth: 2, alignItems: 'center' },
   sizeButtonText: { fontSize: 16, fontWeight: '600' },
   modeSectionLabel: { fontSize: 14, marginBottom: 12, fontWeight: '600' },
-  modeButton: { padding: 16, borderRadius: 12, borderWidth: 2, marginBottom: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  modeButtonIcon: { fontSize: 24 },
+  modeButton: { padding: 16, borderRadius: 12, borderWidth: 2, marginBottom: 12, alignItems: 'center' },
   modeButtonText: { fontSize: 18, fontWeight: '600' },
   modeCancelButton: { padding: 12, marginTop: 8 },
   modeCancelText: { fontSize: 16, textAlign: 'center' },
+
+  // Task board
+  taskBoardOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  taskBoardSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '85%', minHeight: '40%' },
+  taskBoardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1 },
+  taskBoardTitle: { fontSize: 20, fontWeight: '700' },
+  taskBoardSubtitle: { fontSize: 13, marginTop: 2 },
+  taskBoardCloseButton: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
+  taskBoardCloseText: { fontSize: 14, fontWeight: '700' },
+  taskBoardLoading: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
+  taskBoardLoadingText: { marginTop: 12, fontSize: 14 },
+  taskBoardEmpty: { padding: 40, alignItems: 'center' },
+  taskBoardEmptyText: { fontSize: 15, textAlign: 'center' },
+  taskSection: { paddingHorizontal: 16, paddingTop: 20 },
+  taskSectionLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, marginBottom: 10 },
+  taskCard: { borderRadius: 12, marginBottom: 10, padding: 14, borderLeftWidth: 4, elevation: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 2 },
+  taskCardContent: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  taskCardTitle: { fontSize: 15, fontWeight: '600', marginBottom: 2 },
+  taskCardMeta: { fontSize: 12, marginTop: 1 },
+  taskActionButton: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, minWidth: 64, alignItems: 'center', justifyContent: 'center' },
+  taskActionButtonText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+
+  // Quick complete
+  quickCompleteModal: { borderRadius: 20, padding: 24, width: '85%', maxWidth: 340 },
+  quickCompleteTitle: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  quickCompleteSubtitle: { fontSize: 14, marginBottom: 16 },
+  quickCompleteLabel: { fontSize: 13, fontWeight: '600', marginTop: 12, marginBottom: 6 },
+  quickCompleteInput: { borderWidth: 1, borderRadius: 8, padding: 10, fontSize: 15 },
+  quickCompleteTextArea: { minHeight: 72, textAlignVertical: 'top' },
+  quickCompleteButtons: { flexDirection: 'row', gap: 10, marginTop: 20 },
+  quickCompleteCancelButton: { flex: 1, padding: 14, borderRadius: 12, borderWidth: 1, alignItems: 'center' },
+  quickCompleteCancelText: { fontSize: 15, fontWeight: '600' },
+  quickCompleteConfirmButton: { flex: 1, padding: 14, borderRadius: 12, alignItems: 'center' },
+  quickCompleteConfirmText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
 
 export default WorkflowSelectScreen;

@@ -334,12 +334,12 @@ const ClockInScreen: React.FC = () => {
 
       if (isOwner) {
         Alert.alert(
-          "Unavailability Saved ✅",
+          "Unavailability Saved",
           `Your ${typeLabel} for ${days} day${days !== 1 ? "s" : ""} has been recorded and your team will be able to see it.`
         );
       } else {
         Alert.alert(
-          "Request Sent ✅",
+          "Request Sent",
           `Your ${typeLabel} request for ${days} day${days !== 1 ? "s" : ""} has been sent to ${selectedNetwork.owner_name}.`
         );
       }
@@ -421,11 +421,57 @@ const ClockInScreen: React.FC = () => {
     setClockingIn(true);
     try {
       if (!activeEntry) throw new Error("No active time entry found");
+
+      const clockOutTime = new Date().toISOString();
+
       const { error } = await supabase
         .from("time_entries")
-        .update({ clock_out: new Date().toISOString() })
+        .update({ clock_out: clockOutTime })
         .eq("id", activeEntry.id);
       if (error) throw error;
+
+      // ── Generate shift report — fire and forget, never blocks clock-out ──
+      try {
+        const today = new Date().toISOString().split('T')[0];
+
+        // Collect all task_completions for this user during this shift
+        const { data: completions } = await supabase
+          .from('task_completions')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('task_date', today)
+          .eq('location_id', activeEntry.location_id)
+          .order('start_time', { ascending: true });
+
+        const totalHours =
+          (new Date(clockOutTime).getTime() - new Date(activeEntry.clock_in).getTime())
+          / 3600000;
+
+        // Resolve the owner_id for this location
+        const { data: locationRow } = await supabase
+          .from('locations')
+          .select('user_id')
+          .eq('id', activeEntry.location_id)
+          .single();
+
+        if (locationRow?.user_id) {
+          await supabase.from('shift_reports').insert({
+            owner_id:         locationRow.user_id,
+            user_id:          user.id,
+            time_entry_id:    activeEntry.id,
+            location_id:      activeEntry.location_id,
+            shift_date:       today,
+            clock_in:         activeEntry.clock_in,
+            clock_out:        clockOutTime,
+            total_hours:      Math.round(totalHours * 100) / 100,
+            task_completions: completions ?? [],
+          });
+        }
+      } catch (reportErr) {
+        // Non-fatal — clock-out is already saved
+        console.warn('[ClockOut] shift_report write failed (non-fatal):', reportErr);
+      }
+
       await loadActiveEntry();
       Alert.alert("Clocked Out", "You are now off the clock");
     } catch (err: any) {
@@ -467,9 +513,9 @@ const ClockInScreen: React.FC = () => {
     return "#d97706";
   }
   function statusLabel(status: string): string {
-    if (status === "approved") return "✅ Approved";
-    if (status === "declined") return "❌ Declined";
-    return "⏳ Pending";
+    if (status === "approved") return "Approved";
+    if (status === "declined") return "Declined";
+    return "Pending";
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -499,7 +545,7 @@ const ClockInScreen: React.FC = () => {
     <>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.container}>
 
-        {/* ── Clock status card ── */}
+        {/* Clock status card */}
         {activeEntry ? (
           <View style={styles.statusCard}>
             <View style={styles.statusHeader}>
@@ -532,7 +578,7 @@ const ClockInScreen: React.FC = () => {
           </View>
         )}
 
-        {/* ── Network cards ── */}
+        {/* Network cards */}
         {networks.length === 0 ? (
           <View style={styles.card}>
             <Text style={styles.emptyText}>
@@ -549,10 +595,10 @@ const ClockInScreen: React.FC = () => {
                 <Text style={styles.cardTitle}>{network.location_name}</Text>
                 <Text style={styles.cardSubtitle}>
                   {network.role === "owner"
-                    ? "👑 Owner"
+                    ? "Owner"
                     : network.role === "admin"
-                    ? "⭐ Admin"
-                    : "👤 Team Member"}
+                    ? "Admin"
+                    : "Team Member"}
                   {network.allow_anytime_access && " • Access Anytime"}
                 </Text>
 
@@ -602,20 +648,20 @@ const ClockInScreen: React.FC = () => {
                 {isClockedInHere && (
                   <View style={styles.activeIndicator}>
                     <Text style={styles.activeIndicatorText}>
-                      ✓ Currently Clocked In Here
+                      Currently Clocked In Here
                     </Text>
                   </View>
                 )}
 
-                {/* ── Request Time Off / Unavailability (all roles) ── */}
+                {/* Request Time Off / Unavailability */}
                 <TouchableOpacity
                   style={styles.requestButton}
                   onPress={() => openRequestModal(network)}
                 >
                   <Text style={styles.requestButtonText}>
                     {network.role === "owner"
-                      ? "📅 Mark Unavailability"
-                      : "🏖️ Request Time Off"}
+                      ? "Mark Unavailability"
+                      : "Request Time Off"}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -623,7 +669,7 @@ const ClockInScreen: React.FC = () => {
           })
         )}
 
-        {/* ── My recent requests ── */}
+        {/* My recent requests */}
         {myRequests.length > 0 && (
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>My Time Off Requests</Text>
@@ -634,12 +680,12 @@ const ClockInScreen: React.FC = () => {
                 <View key={req.id} style={styles.requestRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.requestRowTitle}>
-                      {req.type === "holiday" ? "🏖️ Holiday" : "💼 Unpaid Leave"}
+                      {req.type === "holiday" ? "Holiday" : "Unpaid Leave"}
                       {" · "}
                       {req.days} day{req.days !== 1 ? "s" : ""}
                     </Text>
                     <Text style={styles.requestRowDates}>
-                      {req.date_from} → {req.date_to}
+                      {req.date_from} — {req.date_to}
                     </Text>
                     {req.notes && (
                       <Text style={styles.requestRowNotes}>{req.notes}</Text>
@@ -664,11 +710,11 @@ const ClockInScreen: React.FC = () => {
                         style={styles.deleteRequestButton}
                         onPress={() => handleDeleteRequest(req.id)}
                       >
-                        <Text style={styles.deleteRequestButtonText}>✕ Cancel</Text>
+                        <Text style={styles.deleteRequestButtonText}>Cancel</Text>
                       </TouchableOpacity>
                     )}
                     {req.status === "approved" && (
-                      <Text style={styles.requestLockedText}>🔒 Locked</Text>
+                      <Text style={styles.requestLockedText}>Locked</Text>
                     )}
                   </View>
                 </View>
@@ -679,9 +725,7 @@ const ClockInScreen: React.FC = () => {
 
       </ScrollView>
 
-      {/* ══════════════════════════════════════
-          HOLIDAY / UNAVAILABILITY REQUEST MODAL
-      ══════════════════════════════════════ */}
+      {/* Holiday / Unavailability Request Modal */}
       <Modal
         visible={requestModalOpen}
         transparent
@@ -691,7 +735,7 @@ const ClockInScreen: React.FC = () => {
         <View style={styles.modalOverlay}>
           <View style={styles.modal}>
             <Text style={styles.modalTitle}>
-              {isOwnerRequest ? "📅 Mark Unavailability" : "🏖️ Request Time Off"}
+              {isOwnerRequest ? "Mark Unavailability" : "Request Time Off"}
             </Text>
             {selectedNetwork && (
               <Text style={styles.modalSubtitle}>
@@ -717,7 +761,7 @@ const ClockInScreen: React.FC = () => {
                     requestType === "holiday" && styles.typeButtonTextActive,
                   ]}
                 >
-                  🏖️ Holiday
+                  Holiday
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -733,7 +777,7 @@ const ClockInScreen: React.FC = () => {
                     requestType === "unpaid_leave" && styles.typeButtonTextActive,
                   ]}
                 >
-                  💼 Unpaid Leave
+                  Unpaid Leave
                 </Text>
               </TouchableOpacity>
             </View>
@@ -790,7 +834,7 @@ const ClockInScreen: React.FC = () => {
             {isOwnerRequest && (
               <View style={styles.ownerInfoBanner}>
                 <Text style={styles.ownerInfoText}>
-                  ℹ️ As the owner, this will be automatically approved and visible on your team's schedule.
+                  As the owner, this will be automatically approved and visible on your team's schedule.
                 </Text>
               </View>
             )}
