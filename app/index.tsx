@@ -261,8 +261,7 @@ export default function HomeScreen() {
               onPress={() => router.push("/screens/WorkflowSelectScreen")}
               style={[styles.tile, { backgroundColor: colors.surface ?? "#ffffff", borderColor: "#e5e7eb" }]}
             >
-              <Text style={styles.tileIcon}></Text>
-              <Text style={[styles.tileLabel, { color: colors.text ?? "#1f2937" }]}>My Workflows</Text>
+            <Text style={[styles.tileLabel, { color: colors.text ?? "#1f2937" }]}>My Workflows</Text>
             </TouchableOpacity>
 
             {/* Clock In/Out */}
@@ -275,8 +274,7 @@ export default function HomeScreen() {
               ]}
               disabled={connection.state === 'offline'}
             >
-              <Text style={styles.tileIcon}></Text>
-              <Text style={[
+                <Text style={[
                 styles.tileLabel,
                 { color: connection.state === 'offline' ? "#9ca3af" : (colors.text ?? "#1f2937") },
               ]}>
@@ -297,8 +295,7 @@ export default function HomeScreen() {
               ]}
               disabled={connection.state === 'offline'}
             >
-              <Text style={styles.tileIcon}></Text>
-              <Text style={[
+                <Text style={[
                 styles.tileLabel,
                 { color: connection.state === 'offline' ? "#9ca3af" : (colors.text ?? "#1f2937") },
               ]}>
@@ -319,8 +316,7 @@ export default function HomeScreen() {
               ]}
               disabled={connection.state === 'offline'}
             >
-              <Text style={styles.tileIcon}></Text>
-              <Text style={[
+                <Text style={[
                 styles.tileLabel,
                 { color: connection.state === 'offline' ? "#9ca3af" : (colors.text ?? "#1f2937") },
               ]}>
@@ -445,24 +441,22 @@ const styles = StyleSheet.create({
 
   // ── Tile grid ──────────────────────────────────────────────────────────────
   tileGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+    flexDirection: "column",
     gap: 12,
     width: "100%",
-    justifyContent: "center",
   },
   tile: {
-    width: "47%",
-    aspectRatio: 1,
+    width: "100%",
     borderRadius: 16,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 16,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
     elevation: 1,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
+   shadowOpacity: 0.05,
     shadowRadius: 2,
   },
   tileDisabled: {
