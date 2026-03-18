@@ -1,22 +1,20 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { FC, useEffect, useState } from "react";
+import { FC, useEffect, useState, useRef } from "react";
 import { ScrollView, Text, View, TouchableOpacity, StyleSheet, Alert, TextInput, Modal } from "react-native";
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { 
+import {
   getWorkflows, getBatch, updateBatchStep, completeBatchStep,
-  getTimerStatus, acknowledgeTimer, getDeviceName,
-  wasteBatch, deductIngredientsForBatch,
-  Workflow, Batch 
+  getDeviceName, wasteBatch, deductIngredientsForBatch,
+  Workflow, Batch
 } from "../../services/database";
 import { createBatchCompletionReport, createWasteReport } from "../../services/reports";
-import BatchTimer from '../components/BatchTimer';
+import BatchTimer, { BatchTimerRef } from '../components/BatchTimer';
 import YouTubeVideo from '../components/YouTubeVideo';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useVoiceCommands, VoiceCommand } from '../../hooks/useVoiceCommands';
 import { supabase } from '../../lib/supabase';
 
-// Haptic feedback helpers
 const haptics = {
   light: () => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light),
   medium: () => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium),
@@ -40,7 +38,8 @@ export const StepScreen: FC = () => {
   const [wasteNotes, setWasteNotes] = useState('');
   const [wasting, setWasting] = useState(false);
 
-  // Voice Commands Setup
+  const timerRef = useRef<BatchTimerRef>(null);
+
   const voiceCommands: VoiceCommand[] = [
     {
       command: 'next step',
@@ -88,28 +87,30 @@ export const StepScreen: FC = () => {
         }
       },
     },
+    {
+      command: 'start timer',
+      aliases: ['timer start', 'begin timer', 'run timer', 'go timer'],
+      action: () => timerRef.current?.start(),
+    },
+    {
+      command: 'pause timer',
+      aliases: ['timer pause', 'stop timer', 'timer stop', 'hold timer', 'hold'],
+      action: () => timerRef.current?.pause(),
+    },
+    {
+      command: 'add minute',
+      aliases: ['plus one minute', 'one more minute', 'add a minute', 'extend timer', 'more time'],
+      action: () => timerRef.current?.addMinute(),
+    },
+    {
+      command: 'reset timer',
+      aliases: ['timer reset', 'restart timer', 'clear timer'],
+      action: () => timerRef.current?.reset(),
+    },
   ];
 
   const { isListening, recognizedText, error: voiceError, startListening, stopListening } =
     useVoiceCommands(voiceCommands);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (batchId) {
-        const b = getBatch(batchId);
-        if (b) {
-          setBatch(b);
-          b.activeTimers.forEach(timer => {
-            const status = getTimerStatus(timer);
-            if (status.isExpired && !timer.acknowledged) {
-              acknowledgeTimer(batchId, timer.id);
-            }
-          });
-        }
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [batchId]);
 
   useEffect(() => {
     const loadBatchData = async () => {
@@ -133,7 +134,7 @@ export const StepScreen: FC = () => {
           <Text style={[styles.errorText, { color: colors.textSecondary }]}>
             {!batchId ? 'No batch ID provided' : !batch ? 'Batch not found' : 'Workflow not found'}
           </Text>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.backButton, { backgroundColor: colors.primary }]}
             onPress={() => router.back()}
           >
@@ -153,7 +154,7 @@ export const StepScreen: FC = () => {
           <Text style={[styles.errorText, { color: colors.textSecondary }]}>
             No step found at index {currentStepIndex}
           </Text>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.backButton, { backgroundColor: colors.primary }]}
             onPress={() => router.back()}
           >
@@ -171,16 +172,16 @@ export const StepScreen: FC = () => {
     if (step.checklistItems && Array.isArray(step.checklistItems) && step.checklistItems.length > 0) {
       return step.checklistItems;
     }
-    const checklistMatch = step.description.match(/📋 Checklist:\n([\s\S]*?)(?=\n\n|$)/);
+    const checklistMatch = step.description.match(/Checklist:\n([\s\S]*?)(?=\n\n|$)/);
     if (!checklistMatch) return [];
     return checklistMatch[1]
       .split('\n')
-      .map((line: string) => line.replace(/^☐\s*/, '').trim())
+      .map((line: string) => line.replace(/^[\s\-\*]+/, '').trim())
       .filter(Boolean);
   };
 
   const extractYouTubeUrl = (description: string): string | null => {
-    const match = description.match(/🎥 Video:\s*(https?:\/\/[^\s]+)/);
+    const match = description.match(/Video:\s*(https?:\/\/[^\s]+)/);
     return match ? match[1] : null;
   };
 
@@ -199,15 +200,15 @@ export const StepScreen: FC = () => {
   );
 
   const youtubeUrl = extractYouTubeUrl(currentStep.description);
-  
+
   const displayDescription = applyBatchMultiplier(
     currentStep.description
-      .replace(/📋 Checklist:\n[\s\S]*?(?=\n\n|$)/, '')
-      .replace(/🎥 Video:\s*https?:\/\/[^\s]+/, '')
+      .replace(/Checklist:\n[\s\S]*?(?=\n\n|$)/, '')
+      .replace(/Video:\s*https?:\/\/[^\s]+/, '')
       .trim(),
     batch.batchSizeMultiplier
   );
-  
+
   const allItemsChecked = checklistItems.length > 0 && checklistItems.every(item => checkedItems.has(item));
   const isLastStep = currentStepIndex === workflow.steps.length - 1;
 
@@ -242,7 +243,6 @@ export const StepScreen: FC = () => {
       const startTime = batch.createdAt;
       const actualDuration = Math.round((endTime - startTime) / 1000 / 60);
 
-      // Deduct ALL ingredients across all steps
       let deductResult = { deducted: [] as any[], skipped: [] as string[] };
       try {
         deductResult = await deductIngredientsForBatch(
@@ -266,7 +266,6 @@ export const StepScreen: FC = () => {
         actualDuration
       );
 
-      // ── Write task_completions row — fire and forget, never blocks finish ──
       try {
         const { data: { user: currentUser } } = await supabase.auth.getUser();
         if (currentUser) {
@@ -285,8 +284,6 @@ export const StepScreen: FC = () => {
               (new Date(endISO).getTime() - batch.createdAt) / 60000
             );
 
-            // Check if there is a matching in_progress scheduled_batch for
-            // this workflow today so we can link back to it
             const { data: scheduledBatch } = await supabase
               .from('scheduled_batches')
               .select('id')
@@ -312,21 +309,15 @@ export const StepScreen: FC = () => {
               notes: null,
             });
 
-            // Mark the scheduled batch as completed if we found one
             if (scheduledBatch?.id) {
               await supabase
                 .from('scheduled_batches')
-                .update({
-                  status: 'completed',
-                  completed_at: endISO,
-                  updated_at: endISO,
-                })
+                .update({ status: 'completed', completed_at: endISO, updated_at: endISO })
                 .eq('id', scheduledBatch.id);
             }
           }
         }
       } catch (taskErr) {
-        // Non-fatal — batch completion is already saved, this is just telemetry
         console.warn('task_completions write failed (non-fatal):', taskErr);
       }
 
@@ -357,10 +348,8 @@ export const StepScreen: FC = () => {
     try {
       haptics.heavy();
 
-      // 1. Mark batch as wasted in database
       await wasteBatch(batchId, currentStepIndex, wasteNotes || undefined);
 
-      // 2. Deduct ingredients only up to the current step
       let deductResult = { deducted: [] as any[], skipped: [] as string[] };
       try {
         deductResult = await deductIngredientsForBatch(
@@ -374,7 +363,6 @@ export const StepScreen: FC = () => {
         console.warn('Inventory deduction failed (non-fatal):', invErr);
       }
 
-      // 3. Save waste report
       const deviceName = await getDeviceName();
       const endTime = Date.now();
       const actualDuration = Math.round((endTime - batch.createdAt) / 1000 / 60);
@@ -454,7 +442,7 @@ export const StepScreen: FC = () => {
 
   const handleSubRecipeClick = async (subRecipeName: string) => {
     const allWorkflows = await getWorkflows();
-    const subWorkflow = allWorkflows.find(w => 
+    const subWorkflow = allWorkflows.find(w =>
       w.name.toLowerCase().includes(subRecipeName.toLowerCase())
     );
     if (subWorkflow) {
@@ -463,8 +451,8 @@ export const StepScreen: FC = () => {
         'Open this sub-recipe?',
         [
           { text: 'Cancel', style: 'cancel' },
-          { 
-            text: 'Open', 
+          {
+            text: 'Open',
             onPress: async () => {
               const { createBatch } = require('../../services/database');
               const subBatch = await createBatch(subWorkflow.id, batch.mode);
@@ -478,8 +466,8 @@ export const StepScreen: FC = () => {
 
   return (
     <>
-      <ScrollView 
-        style={[styles.container, { backgroundColor: colors.background }]} 
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.content}
       >
         {/* Header */}
@@ -489,14 +477,14 @@ export const StepScreen: FC = () => {
               Step {currentStepIndex + 1} of {workflow.steps.length}
             </Text>
             <View style={[styles.progressBar, { backgroundColor: colors.border }]}>
-              <View 
+              <View
                 style={[
-                  styles.progressFill, 
-                  { 
+                  styles.progressFill,
+                  {
                     width: `${((currentStepIndex + 1) / workflow.steps.length) * 100}%`,
                     backgroundColor: colors.primary
                   }
-                ]} 
+                ]}
               />
             </View>
           </View>
@@ -510,8 +498,8 @@ export const StepScreen: FC = () => {
             </TouchableOpacity>
 
             {checklistItems.length > 0 && (
-              <TouchableOpacity 
-                onPress={handleClear} 
+              <TouchableOpacity
+                onPress={handleClear}
                 style={[styles.clearButton, { backgroundColor: colors.textSecondary }]}
               >
                 <Text style={styles.clearButtonText}>Clear</Text>
@@ -545,12 +533,12 @@ export const StepScreen: FC = () => {
         </View>
 
         {/* Instructions */}
-        {displayDescription && (
+        {displayDescription ? (
           <View style={[styles.card, { backgroundColor: colors.surface, shadowColor: colors.shadow }]}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Instructions</Text>
             <Text style={[styles.description, { color: colors.textSecondary }]}>{displayDescription}</Text>
           </View>
-        )}
+        ) : null}
 
         {/* YouTube Video */}
         {youtubeUrl && (
@@ -573,7 +561,7 @@ export const StepScreen: FC = () => {
                 <View key={index} style={styles.checklistItem}>
                   <TouchableOpacity onPress={() => toggleCheckbox(item)} style={styles.checkbox}>
                     <View style={[
-                      styles.checkboxBox, 
+                      styles.checkboxBox,
                       { borderColor: colors.primary },
                       isChecked && { backgroundColor: colors.primary }
                     ]}>
@@ -581,7 +569,7 @@ export const StepScreen: FC = () => {
                     </View>
                   </TouchableOpacity>
                   {isLink ? (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={() => handleSubRecipeClick(extractSubRecipeName(item))}
                       style={styles.linkContainer}
                     >
@@ -601,8 +589,7 @@ export const StepScreen: FC = () => {
           <View style={[styles.card, { backgroundColor: colors.surface, shadowColor: colors.shadow }]}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Timer</Text>
             <BatchTimer
-              batchId={batchId!}
-              stepId={currentStep.id}
+              ref={timerRef}
               durationMinutes={currentStep.timerMinutes}
             />
           </View>
@@ -613,19 +600,21 @@ export const StepScreen: FC = () => {
           <View style={[styles.card, { backgroundColor: colors.surface + '80', shadowColor: colors.shadow }]}>
             <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 14 }]}>Voice Commands:</Text>
             <Text style={[styles.voiceHelpText, { color: colors.textSecondary }]}>
-              • "Next step" or "Previous step"{'\n'}
-              • "Clear checklist"{'\n'}
-              • "Finish batch" (on last step)
+              Next / Previous step{'\n'}
+              Check / Check all / Clear checklist{'\n'}
+              Start timer / Pause timer{'\n'}
+              Add minute / Reset timer{'\n'}
+              Finish batch (last step only)
             </Text>
           </View>
         )}
 
-        {/* Navigation buttons */}
+        {/* Navigation */}
         <View style={styles.navigationContainer}>
           <TouchableOpacity
             onPress={handlePrevious}
             style={[
-              styles.navButton, 
+              styles.navButton,
               { backgroundColor: colors.textSecondary },
               currentStepIndex === 0 && { backgroundColor: colors.disabled }
             ]}
@@ -638,7 +627,7 @@ export const StepScreen: FC = () => {
             <TouchableOpacity
               onPress={handleFinish}
               style={[
-                styles.navButton, 
+                styles.navButton,
                 { backgroundColor: colors.success },
                 (!allItemsChecked && checklistItems.length > 0) && { backgroundColor: colors.disabled }
               ]}
@@ -650,7 +639,7 @@ export const StepScreen: FC = () => {
             <TouchableOpacity
               onPress={handleNext}
               style={[
-                styles.navButton, 
+                styles.navButton,
                 { backgroundColor: colors.primary },
                 (!allItemsChecked && checklistItems.length > 0) && { backgroundColor: colors.disabled }
               ]}
@@ -661,7 +650,6 @@ export const StepScreen: FC = () => {
           )}
         </View>
 
-        {/* Checklist warning */}
         {(!allItemsChecked && checklistItems.length > 0) && (
           <View style={[styles.warningContainer, { backgroundColor: colors.warning + '20', borderColor: colors.warning }]}>
             <Text style={[styles.warningText, { color: colors.warning }]}>
@@ -670,7 +658,6 @@ export const StepScreen: FC = () => {
           </View>
         )}
 
-        {/* Waste button */}
         <TouchableOpacity
           onPress={() => {
             haptics.warning();
@@ -686,7 +673,7 @@ export const StepScreen: FC = () => {
 
       </ScrollView>
 
-      {/* Waste Confirmation Modal */}
+      {/* Waste Modal */}
       <Modal
         visible={wasteModalVisible}
         transparent
@@ -715,8 +702,8 @@ export const StepScreen: FC = () => {
               Reason (optional):
             </Text>
             <TextInput
-              style={[styles.wasteInput, { 
-                color: colors.text, 
+              style={[styles.wasteInput, {
+                color: colors.text,
                 borderColor: colors.border,
                 backgroundColor: colors.background,
               }]}
@@ -775,7 +762,7 @@ const styles = StyleSheet.create({
   clearButtonText: { color: 'white', fontSize: 14, fontWeight: '600' },
   voiceStatusBanner: { padding: 10, borderRadius: 8, marginBottom: 12, borderWidth: 1 },
   voiceStatusText: { fontSize: 13, fontWeight: '500', textAlign: 'center' },
-  voiceHelpText: { fontSize: 13, lineHeight: 20 },
+  voiceHelpText: { fontSize: 13, lineHeight: 22 },
   stepHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 12 },
   stepTitle: { fontSize: 28, fontWeight: 'bold', flex: 1 },
   multiplierBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
