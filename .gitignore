@@ -10,3 +10,7 @@ expo-env.d.ts
 # @end expo-cli
 android/app/*.jks
 .env
+.env.local
+.env.production
+.env.development.local
+*.jks
