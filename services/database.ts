@@ -858,13 +858,28 @@ export async function deductIngredientsForBatch(
 function _extractStepIngredients(
   step: Step,
   multiplier: number
-): { name: string; amount: number; unit: string }[] {
-  const results: { name: string; amount: number; unit: string }[] = [];
+): { name: string; amount: number; unit: string; inventory_item_id?: string | null }[] {
+  const results: { name: string; amount: number; unit: string; inventory_item_id?: string | null }[] = [];
 
   if (step.ingredients && step.ingredients.length > 0) {
     for (const ing of step.ingredients) {
-      const parsed = _parseIngredientString(ing, multiplier);
-      if (parsed) results.push(parsed);
+      if (typeof ing === 'object' && ing !== null && 'name' in ing) {
+        // New structured format
+        const structured = ing as { name: string; amount: string; unit: string; inventory_item_id: string | null };
+        const amount = parseFloat(structured.amount) * multiplier;
+        if (structured.name && amount > 0) {
+          results.push({
+            name: structured.name,
+            amount: Math.round(amount * 100) / 100,
+            unit: structured.unit || 'unit',
+            inventory_item_id: structured.inventory_item_id,
+          });
+        }
+      } else if (typeof ing === 'string') {
+        // Legacy string format
+        const parsed = _parseIngredientString(ing, multiplier);
+        if (parsed) results.push(parsed);
+      }
     }
     return results;
   }
