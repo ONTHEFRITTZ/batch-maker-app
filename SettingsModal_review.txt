@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import {
   Modal, View, Text, TouchableOpacity, StyleSheet,
   ScrollView, Alert, TextInput
@@ -9,6 +9,8 @@ import {
   getWorkflows, setWorkflows,
   getDeviceName, setDeviceName, Workflow
 } from '../../services/database';
+import * as DocumentPicker from 'expo-document-picker';
+import * as XLSX from 'xlsx';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -45,6 +47,142 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
     }
   };
 
+  const handleImportExcel = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+          'text/csv'
+        ],
+      });
+
+      if (result.canceled) return;
+
+      const file = result.assets[0];
+      
+      console.log('≡ƒôÑ Reading file:', file.name);
+      
+      const response = await fetch(file.uri);
+      const arrayBuffer = await response.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+
+      const newWorkflows: Workflow[] = [];
+      
+      console.log('Found sheets:', workbook.SheetNames);
+      
+      workbook.SheetNames.forEach((sheetName) => {
+        if (sheetName === 'SOP_Template') return;
+
+        const sheet = workbook.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json<any>(sheet, { defval: '' });
+
+        console.log(`Sheet "${sheetName}" has ${rows.length} rows`);
+
+        if (rows.length === 0) return;
+
+        const workflowId = `${sheetName.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}`;
+        const steps: any[] = [];
+
+        const stepGroups = new Map<number, any[]>();
+        
+        rows.forEach((row) => {
+          const stepNum = row['Step Number'];
+          
+          if (stepNum && typeof stepNum === 'number' && !isNaN(stepNum)) {
+            if (!stepGroups.has(stepNum)) {
+              stepGroups.set(stepNum, []);
+            }
+            stepGroups.get(stepNum)!.push(row);
+          } else if (stepGroups.size > 0) {
+            const lastStepNum = Array.from(stepGroups.keys()).pop()!;
+            stepGroups.get(lastStepNum)!.push(row);
+          }
+        });
+
+        console.log(`Grouped into ${stepGroups.size} steps`);
+
+        stepGroups.forEach((stepRows, stepNum) => {
+          const firstRow = stepRows[0];
+          
+          const instructions = firstRow['Instructions'] || '';
+          const timerStr = firstRow['Suggested Time (min)'] || '';
+          const targetTemp = firstRow['Target Temp (┬░C)'];
+          const visualCues = firstRow['Visual Cues'] || '';
+          
+          let description = String(instructions).trim();
+          
+          const ingredients: string[] = [];
+          stepRows.forEach((row) => {
+            const ingredient = row['Requirements / Components (Checklist)'];
+            const amount = row['Amount (grams)'];
+            
+            if (ingredient && String(ingredient).trim()) {
+              if (amount) {
+                ingredients.push(`${ingredient}: ${amount}g`);
+              } else {
+                ingredients.push(String(ingredient));
+              }
+            }
+          });
+
+          if (targetTemp) {
+            description += `\n\nTarget Temperature: ${targetTemp}┬░C`;
+          }
+
+          if (visualCues) {
+            description += `\n\nVisual Cues: ${visualCues}`;
+          }
+
+          if (ingredients.length > 0) {
+            if (description) {
+              description += '\n\n';
+            }
+            description += '≡ƒôï Checklist:\n' + ingredients.map(item => `ΓÿÉ ${item}`).join('\n');
+          }
+
+          steps.push({
+            id: `${workflowId}_step_${stepNum}`,
+            title: instructions || `Step ${stepNum}`,
+            description: description.trim(),
+            timerMinutes: timerStr ? parseInt(String(timerStr)) : undefined,
+            completed: false,
+          });
+        });
+
+        console.log(`Created ${steps.length} steps for workflow "${sheetName}"`);
+
+        if (steps.length > 0) {
+          newWorkflows.push({
+            id: workflowId,
+            name: sheetName,
+            steps,
+          });
+        }
+      });
+
+      if (newWorkflows.length === 0) {
+        Alert.alert('Error', 'No valid workflows found in the file');
+        return;
+      }
+
+      const existingWorkflows = await getWorkflows();
+      await setWorkflows([...existingWorkflows, ...newWorkflows]);
+      
+      setShowImportModal(false);
+      loadData();
+      onWorkflowsUpdated();
+      
+      Alert.alert(
+        'Success!', 
+        `Imported ${newWorkflows.length} workflow(s):\n${newWorkflows.map(w => w.name).join(', ')}`
+      );
+    } catch (error) {
+      console.error('Excel import error:', error);
+      Alert.alert('Error', `Failed to import: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
   const toggleWorkflowSelection = (id: string) => {
     const newSelection = new Set(selectedForRemoval);
     if (newSelection.has(id)) {
@@ -74,7 +212,7 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
               (wf: Workflow) => !selectedForRemoval.has(wf.id)
             );
             await setWorkflows(updatedWorkflows);
-
+            
             setSelectedForRemoval(new Set());
             setShowRemoveModal(false);
             loadData();
@@ -107,10 +245,10 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Device Name</Text>
               <View style={styles.inputRow}>
                 <TextInput
-                  style={[styles.input, {
-                    backgroundColor: colors.background,
+                  style={[styles.input, { 
+                    backgroundColor: colors.background, 
                     color: colors.text,
-                    borderColor: colors.border
+                    borderColor: colors.border 
                   }]}
                   value={deviceName}
                   onChangeText={setDeviceNameState}
@@ -135,9 +273,9 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
                     style={[
                       styles.themeButton,
                       { borderColor: colors.border },
-                      theme === t && {
+                      theme === t && { 
                         backgroundColor: colors.primary,
-                        borderColor: colors.primary
+                        borderColor: colors.primary 
                       }
                     ]}
                     onPress={() => setTheme(t)}
@@ -155,7 +293,7 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
 
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Workflows</Text>
-
+              
               <TouchableOpacity
                 style={[styles.actionButton, { backgroundColor: colors.primary }]}
                 onPress={() => {
@@ -200,6 +338,24 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
             </Text>
 
             <TouchableOpacity
+              style={[styles.importButton, { backgroundColor: colors.primary + '20', borderColor: colors.primary }]}
+              onPress={() => {
+                setShowImportModal(false);
+                handleImportExcel();
+              }}
+            >
+              <Text style={styles.importButtonIcon}>≡ƒôè</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.importButtonTitle, { color: colors.text }]}>
+                  Spreadsheet
+                </Text>
+                <Text style={[styles.importButtonSubtitle, { color: colors.textSecondary }]}>
+                  Excel (.xlsx), Google Sheets, CSV
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
               style={[styles.importButton, { backgroundColor: colors.success + '20', borderColor: colors.success }]}
               onPress={() => {
                 setShowImportModal(false);
@@ -207,7 +363,7 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
                 onClose();
               }}
             >
-              <Text style={styles.importButtonIcon}>📝</Text>
+              <Text style={styles.importButtonIcon}>≡ƒô¥</Text>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.importButtonTitle, { color: colors.text }]}>
                   Text Recipe
@@ -226,7 +382,7 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
                 onClose();
               }}
             >
-              <Text style={styles.importButtonIcon}>🌐</Text>
+              <Text style={styles.importButtonIcon}>≡ƒîÉ</Text>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.importButtonTitle, { color: colors.text }]}>
                   From URL
@@ -275,12 +431,12 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
                       <View style={[
                         styles.checkbox,
                         { borderColor: colors.primary },
-                        selectedForRemoval.has(workflow.id) && {
-                          backgroundColor: colors.primary
+                        selectedForRemoval.has(workflow.id) && { 
+                          backgroundColor: colors.primary 
                         }
                       ]}>
                         {selectedForRemoval.has(workflow.id) && (
-                          <Text style={styles.checkmark}>✓</Text>
+                          <Text style={styles.checkmark}>Γ£ô</Text>
                         )}
                       </View>
                     </View>
@@ -312,7 +468,7 @@ export default function SettingsModal({ visible, onClose, onWorkflowsUpdated }: 
 
               <TouchableOpacity
                 style={[
-                  styles.removeModalButton,
+                  styles.removeModalButton, 
                   { backgroundColor: colors.error },
                   selectedForRemoval.size === 0 && { backgroundColor: colors.disabled }
                 ]}
