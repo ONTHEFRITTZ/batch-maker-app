@@ -5,7 +5,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import {
   getWorkflows, getBatch, updateBatchStep, completeBatchStep,
-  getDeviceName, wasteBatch, deductIngredientsForBatch,
+  getDeviceName, wasteBatch,
   Workflow, Batch
 } from "../../services/database";
 import { createBatchCompletionReport, createWasteReport } from "../../services/reports";
@@ -24,6 +24,143 @@ const haptics = {
   error: () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error),
   selection: () => Haptics.selectionAsync(),
 };
+
+// ─── Call the complete-batch edge function ────────────────────────────────────
+// Collects all structured ingredients from all steps up to upToStepIndex,
+// then calls the server-side edge function which handles deduction + finished goods.
+async function callCompleteBatch({
+  batchId,
+  batch,
+  workflow,
+  upToStepIndex,
+  batchCompletionReportId,
+  locationId,
+  actualYieldAmount,
+  actualYieldUnit,
+  isWaste,
+  wasteQuantity,
+  wasteUnit,
+}: {
+  batchId: string;
+  batch: Batch;
+  workflow: Workflow;
+  upToStepIndex: number;
+  batchCompletionReportId: string | null;
+  locationId: string;
+  actualYieldAmount: number | null;
+  actualYieldUnit: string | null;
+  isWaste: boolean;
+  wasteQuantity?: number | null;
+  wasteUnit?: string | null;
+}): Promise<{ deducted: any[]; skipped: string[]; finished_good_id: string | null }> {
+
+  // Collect all ingredients from steps 0..upToStepIndex
+  // Merge duplicates by name+unit, summing amounts
+  const ingredientMap = new Map<string, { name: string; amount: number; unit: string; inventory_item_id: string | null }>();
+
+  for (let i = 0; i <= upToStepIndex; i++) {
+    const step = workflow.steps[i];
+    if (!step?.ingredients?.length) continue;
+
+    for (const ing of step.ingredients) {
+      if (typeof ing === 'object' && ing !== null && 'name' in ing) {
+        // Structured ingredient
+        const structured = ing as { name: string; amount: string; unit: string; inventory_item_id: string | null };
+        const amount = parseFloat(structured.amount) * batch.batchSizeMultiplier;
+        if (!structured.name || amount <= 0) continue;
+
+        const key = `${structured.name.toLowerCase()}|${structured.unit}`;
+        const existing = ingredientMap.get(key);
+        if (existing) {
+          existing.amount += amount;
+        } else {
+          ingredientMap.set(key, {
+            name: structured.name,
+            amount: Math.round(amount * 100) / 100,
+            unit: structured.unit || '',
+            inventory_item_id: structured.inventory_item_id ?? null,
+          });
+        }
+      } else if (typeof ing === 'string') {
+        // Legacy string format — parse it
+        const match = ing.trim().match(
+          /^(\d+(?:\.\d+)?)\s*(g|kg|ml|l|oz|lb|cups?|tbsp|tsp|pieces?|ea|cs|bag|box|can|bt)?\s+(.+)$/i
+        );
+        if (!match) continue;
+        const amount = parseFloat(match[1]) * batch.batchSizeMultiplier;
+        const unit = match[2] ?? '';
+        const name = match[3].trim();
+        if (!name || amount <= 0) continue;
+
+        const key = `${name.toLowerCase()}|${unit}`;
+        const existing = ingredientMap.get(key);
+        if (existing) {
+          existing.amount += amount;
+        } else {
+          ingredientMap.set(key, { name, amount: Math.round(amount * 100) / 100, unit, inventory_item_id: null });
+        }
+      }
+    }
+  }
+
+  const ingredientsUsed = Array.from(ingredientMap.values());
+
+  // Get the user's JWT for the edge function call
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+  const functionUrl = `${supabaseUrl}/functions/v1/complete-batch`;
+
+  const response = await fetch(functionUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({
+      batch_id: batchId,
+      batch_completion_report_id: batchCompletionReportId,
+      location_id: locationId,
+      actual_yield_amount: actualYieldAmount,
+      actual_yield_unit: actualYieldUnit,
+      batch_size_multiplier: batch.batchSizeMultiplier,
+      ingredients_used: ingredientsUsed,
+      is_waste: isWaste,
+      waste_quantity: wasteQuantity ?? null,
+      waste_unit: wasteUnit ?? null,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `Edge function error: ${response.status}`);
+  }
+
+  const result = await response.json();
+  return {
+    deducted: result.deducted ?? [],
+    skipped: result.skipped ?? [],
+    finished_good_id: result.finished_good_id ?? null,
+  };
+}
+
+// ─── Get the location the user is currently clocked in at ────────────────────
+async function getClockedInLocationId(userId: string): Promise<string | null> {
+  try {
+    const { data } = await supabase
+      .from('time_entries')
+      .select('location_id')
+      .eq('user_id', userId)
+      .is('clock_out', null)
+      .order('clock_in', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return data?.location_id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export const StepScreen: FC = () => {
   const router = useRouter();
@@ -167,7 +304,15 @@ export const StepScreen: FC = () => {
 
   const extractChecklistItems = (step: any): string[] => {
     if (step.ingredients && Array.isArray(step.ingredients) && step.ingredients.length > 0) {
-      return step.ingredients;
+      // New structured format — show as "amount unit name"
+      return step.ingredients.map((ing: any) => {
+        if (typeof ing === 'object' && ing !== null && 'name' in ing) {
+          const amount = ing.amount ? `${parseFloat(ing.amount) * batch.batchSizeMultiplier}` : '';
+          const unit = ing.unit ?? '';
+          return [amount, unit, ing.name].filter(Boolean).join(' ');
+        }
+        return typeof ing === 'string' ? ing : '';
+      }).filter(Boolean);
     }
     if (step.checklistItems && Array.isArray(step.checklistItems) && step.checklistItems.length > 0) {
       return step.checklistItems;
@@ -195,14 +340,12 @@ export const StepScreen: FC = () => {
     });
   };
 
-  const checklistItems = extractChecklistItems(currentStep).map(item =>
-    applyBatchMultiplier(item, batch.batchSizeMultiplier)
-  );
+  const checklistItems = extractChecklistItems(currentStep);
 
-  const youtubeUrl = extractYouTubeUrl(currentStep.description);
+  const youtubeUrl = extractYouTubeUrl(currentStep.description || '');
 
   const displayDescription = applyBatchMultiplier(
-    currentStep.description
+    (currentStep.description || '')
       .replace(/Checklist:\n[\s\S]*?(?=\n\n|$)/, '')
       .replace(/Video:\s*https?:\/\/[^\s]+/, '')
       .trim(),
@@ -240,23 +383,10 @@ export const StepScreen: FC = () => {
     try {
       const deviceName = await getDeviceName();
       const endTime = Date.now();
-      const startTime = batch.createdAt;
-      const actualDuration = Math.round((endTime - startTime) / 1000 / 60);
+      const actualDuration = Math.round((endTime - batch.createdAt) / 1000 / 60);
 
-      let deductResult = { deducted: [] as any[], skipped: [] as string[] };
-      try {
-        deductResult = await deductIngredientsForBatch(
-          batchId!,
-          workflow,
-          workflow.steps.length - 1,
-          batch.batchSizeMultiplier,
-          false
-        );
-      } catch (invErr) {
-        console.warn('Inventory deduction failed (non-fatal):', invErr);
-      }
-
-      await createBatchCompletionReport(
+      // Create the completion report first so we have its ID
+      const completionReport = await createBatchCompletionReport(
         batchId!,
         batch.name,
         workflow.id,
@@ -265,10 +395,39 @@ export const StepScreen: FC = () => {
         batch.batchSizeMultiplier,
         actualDuration
       );
+      const reportId = completionReport.id;
 
+      // Get location from clock-in
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      const locationId = currentUser
+        ? await getClockedInLocationId(currentUser.id)
+        : null;
+
+      // Call edge function — handles deduction + finished goods
+      let deductResult = { deducted: [] as any[], skipped: [] as string[], finished_good_id: null as string | null };
+      if (locationId) {
+        try {
+          deductResult = await callCompleteBatch({
+            batchId: batchId!,
+            batch,
+            workflow,
+            upToStepIndex: workflow.steps.length - 1,
+            batchCompletionReportId: reportId ?? null,
+            locationId,
+            actualYieldAmount: workflow.yield_amount ?? null,
+            actualYieldUnit: workflow.yield_unit ?? null,
+            isWaste: false,
+          });
+        } catch (edgeErr: any) {
+          console.warn('complete-batch edge function failed (non-fatal):', edgeErr.message);
+        }
+      } else {
+        console.log('Not clocked in — skipping ingredient deduction');
+      }
+
+      // task_completions + scheduled_batch update
       try {
-        const { data: { user: currentUser } } = await supabase.auth.getUser();
-        if (currentUser) {
+        if (currentUser && locationId) {
           const { data: activeEntry } = await supabase
             .from('time_entries')
             .select('location_id, owner_id')
@@ -305,7 +464,7 @@ export const StepScreen: FC = () => {
               start_time: startISO,
               end_time: endISO,
               duration_minutes: durationMinutes,
-              batch_completion_report_id: null,
+              batch_completion_report_id: reportId ?? null,
               notes: null,
             });
 
@@ -323,16 +482,19 @@ export const StepScreen: FC = () => {
 
       haptics.success();
 
+      const yieldMsg = deductResult.finished_good_id && workflow.yield_amount
+        ? `\n\n${workflow.yield_amount} ${workflow.yield_unit ?? ''} added to finished goods.`
+        : '';
       const skippedMsg = deductResult.skipped.length > 0
         ? `\n\nNote: ${deductResult.skipped.length} ingredient(s) not found in inventory: ${deductResult.skipped.join(', ')}`
         : '';
 
       Alert.alert(
-        'Batch Complete',
-        `You have completed ${batch.name}\n\nReport saved!${skippedMsg}`,
+        'Batch Complete! 🎉',
+        `${batch.name} finished.\n\nReport saved!${yieldMsg}${skippedMsg}`,
         [{ text: 'Done', onPress: () => router.back() }]
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error finishing batch:', error);
       haptics.success();
       Alert.alert('Batch Complete', `${batch.name} finished.`, [
@@ -350,24 +512,12 @@ export const StepScreen: FC = () => {
 
       await wasteBatch(batchId, currentStepIndex, wasteNotes || undefined);
 
-      let deductResult = { deducted: [] as any[], skipped: [] as string[] };
-      try {
-        deductResult = await deductIngredientsForBatch(
-          batchId,
-          workflow,
-          currentStepIndex,
-          batch.batchSizeMultiplier,
-          true
-        );
-      } catch (invErr) {
-        console.warn('Inventory deduction failed (non-fatal):', invErr);
-      }
-
       const deviceName = await getDeviceName();
       const endTime = Date.now();
       const actualDuration = Math.round((endTime - batch.createdAt) / 1000 / 60);
 
-      await createWasteReport(
+      // Create waste report first to get its ID
+      const wasteReport = await createWasteReport(
         batchId,
         batch.name,
         workflow.id,
@@ -377,10 +527,38 @@ export const StepScreen: FC = () => {
         currentStepIndex,
         currentStep.title,
         wasteNotes || undefined,
-        deductResult.deducted,
-        deductResult.skipped,
+        [],   // deducted — will be filled by edge function
+        [],   // skipped — will be filled by edge function
         actualDuration,
       );
+      const reportId = wasteReport.id;
+
+      // Get location from clock-in
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      const locationId = currentUser
+        ? await getClockedInLocationId(currentUser.id)
+        : null;
+
+      let deductResult = { deducted: [] as any[], skipped: [] as string[], finished_good_id: null as string | null };
+      if (locationId) {
+        try {
+          deductResult = await callCompleteBatch({
+            batchId,
+            batch,
+            workflow,
+            upToStepIndex: currentStepIndex,
+            batchCompletionReportId: reportId ?? null,
+            locationId,
+            actualYieldAmount: null,
+            actualYieldUnit: null,
+            isWaste: true,
+            wasteQuantity: null,
+            wasteUnit: null,
+          });
+        } catch (edgeErr: any) {
+          console.warn('complete-batch edge function failed (non-fatal):', edgeErr.message);
+        }
+      }
 
       setWasteModalVisible(false);
 
